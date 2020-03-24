@@ -1,5 +1,7 @@
 ﻿module Query
 
+open System.Collections.Generic
+
   type computation = unit
 
   type tail_computation = unit
@@ -17,7 +19,7 @@
   type t =
   | Constant   of Constant.t
   | Primitive  of string
-  | Var        of Var.var
+  | Var        of (Var.var * Map<string, Types.datatype>)
   | If         of t * t * t
   | Closure    of (Var.var list * computation) * env
   | Apply      of t * t list
@@ -26,9 +28,12 @@
   | For        of (Var.var * t) list * t list * t
   | Squash     of t
   | Record     of Map<string, t>
-  | Proj       of t * string
+  | Project    of t * string
   | Table      of string
-  and env = unit // TODO
+  and env = Map<string, t>
+
+  let bind (env : env) (x, t) = Map.add x t env
+  let (++) (e1 : env) (e2 : env) = Map.fold (fun acc x t -> Map.add x t acc) e1 e2
 
   let nil = Concat []
   
@@ -199,7 +204,7 @@
     | For (gs', os', body') -> For (gs @ gs', os @ os', body')
     | _                         -> For (gs, os, body)
 
-  let rec reduce_for_source : t * (t -> t) -> t =
+  let rec reduce_for_source : t * (t -> t) -> t = 
     fun (source, body) ->
     let rs = fun source -> reduce_for_source (source, body) in
     match source with
@@ -225,7 +230,7 @@
                 correctly handle self joins *)
             let x = Var.fresh_raw_var () in
             (* Debug.print ("fresh variable: " ^ string_of_int x); *)
-            reduce_for_body ([(x, source)], [], body (Var x))
+            reduce_for_body ([(x, source)], [], body (Var (x, field_types)))
         | v -> query_error "Bad source in for comprehension: %s" (string_of_t v)
 
   let rec reduce_if_body (c, t, e) =
@@ -434,18 +439,18 @@
 //          end
 //      end
 
-//  let eta_expand_var (x, field_types) =
-//    Q.Record
-//      (StringMap.fold
-//         (fun name _t fields ->
-//            StringMap.add name (Q.Project (Q.Var (x, field_types), name)) fields)
-//         field_types
-//         StringMap.empty)
+  let eta_expand_var (x, field_types) =
+    Record
+      (Map.fold
+         (fun fields name _t ->
+            Map.add name (Project (Var (x, field_types), name)) fields)
+         Map.empty
+         field_types)
 
-//  let eta_expand_list xs =
-//    let x = Var.fresh_raw_var () in
-//    let field_types = Q.field_types_of_list xs in
-//      ([x, xs], [], Q.Singleton (eta_expand_var (x, field_types)))
+  let eta_expand_list xs =
+    let x = Var.fresh_raw_var () in
+    let field_types = field_types_of_list xs in
+      ([x, xs], [], Singleton (eta_expand_var (x, field_types)))
 
 //  let reduce_artifacts = function
 //  | Q.Apply (Q.Primitive "stringToXml", [u]) ->
@@ -632,155 +637,113 @@
 //      let e = computation env e in
 //        Q.If (c, t, e)
 
-//  let rec norm env : Q.t -> Q.t =
-//    function
-//    | Q.Record fl -> Q.Record (StringMap.map (norm env) fl)
-//    | Q.Concat xs -> Q.reduce_concat (List.map (norm env) xs)
-//    | Q.Project (r, label) ->
-//      let rec project (r, label) =
-//        match r with
-//          | Q.Record fields ->
-//            assert (StringMap.mem label fields);
-//            StringMap.find label fields
-//          | Q.If (c, t, e) ->
-//            Q.If (c, project (t, label), project (e, label))
-//          | Q.Var (_x, field_types) ->
-//            assert (StringMap.mem label field_types);
-//            Q.Project (r, label)
-//          | _ -> query_error ("Error projecting from record: %s") (string_of_t r)
-//      in
-//        project (norm env r, label)
-//    | Q.Erase (r, labels) ->
-//	let rec erase (r, labels) =
-//          match r with
-//          | Q.Record fields ->
-//            assert (StringSet.for_all
-//                      (fun label -> StringMap.mem label fields) labels);
-//            Q.Record
-//              (StringMap.fold
-//                 (fun label v fields ->
-//                   if StringSet.mem label labels then
-//                     fields
-//                   else
-//                     StringMap.add label v fields)
-//                 fields
-//                 StringMap.empty)
-//          | Q.If (c, t, e) ->
-//            Q.If (c, erase (t, labels), erase (e, labels))
-//          | Q.Var (_x, field_types) ->
-//            assert (StringSet.subset labels (labels_of_field_types field_types));
-//            Q.Erase (r, labels)
-//          | _ -> query_error "Error erasing from record"
-//      in
-//        erase (norm env r, labels)
-//    | Q.Variant (label, v) -> Q.Variant (label, norm env v)
-//    | Q.Apply (f, xs) -> apply env (norm env f, List.map (norm env) xs)
-//    | Q.If (c, t, e) ->
-//        Q.reduce_if_condition (norm env c, norm env t, norm env e)
-//    | Q.Case (v, cases, default) ->
-//      let rec reduce_case (v, cases, default) =
-//        match v with
-//          | Q.Variant (label, v) as w ->
-//            begin
-//              match StringMap.lookup label cases, default with
-//                | Some ((x, _), c), _ ->
-//                  norm (bind env (x, v)) c
-//                | None, Some ((z, _), c) ->
-//                  norm (bind env (z, w)) c
-//                | None, None -> query_error "Pattern matching failed"
-//            end
-//          | Q.If (c, t, e) ->
-//            Q.If
-//              (c,
-//               reduce_case (t, cases, default),
-//               reduce_case (e, cases, default))
-//          |  _ -> assert false
-//      in
-//        reduce_case (norm env v, cases, default)
-//    | v -> v
+  // TODO
+  let computation _ = failwith "Query.computation"
 
-//  and apply env : Q.t * Q.t list -> Q.t = function
-//    | Q.Closure ((xs, body), closure_env), args ->
-//      (* Debug.print ("Applying closure"); *)
-//      (* Debug.print ("body: " ^ Ir.show_computation body); *)
-//      (* Debug.print("Applying query closure: " ^ show_t (`Closure ((xs, body), closure_env))); *)
-//      (* Debug.print("args: " ^ mapstrcat ", " show_t args); *)
-//        let env = env ++ closure_env in
-//        let env = List.fold_right2 (fun x arg env ->
-//            bind env (x, arg)) xs args env in
-//        (* Debug.print("Applied"); *)
-//          norm_comp env body
-//    | Q.Primitive "Cons", [x; xs] ->
-//        Q.reduce_concat [Q.Singleton x; xs]
-//    | Q.Primitive "Concat", ([_xs; _ys] as l) ->
-//        Q.reduce_concat l
-//    | Q.Primitive "ConcatMap", [f; xs] ->
-//        begin
-//          match f with
-//            | Q.Closure (([x], body), closure_env) ->
-//                let env = env ++ closure_env in
-//                  Q.reduce_for_source
-//                    (xs, fun v -> norm_comp (bind env (x, v)) body)
-//            | _ -> assert false
-//        end
-//    | Q.Primitive "Map", [f; xs] ->
-//        begin
-//          match f with
-//            | Q.Closure (([x], body), closure_env) ->
-//                let env = env ++ closure_env in
-//                  Q.reduce_for_source
-//                    (xs, fun v -> Q.Singleton (norm_comp (bind env (x, v)) body))
-//            | _ -> assert false
-//        end
-//    | Q.Primitive "SortBy", [f; xs] ->
-//        begin
-//          match xs with
-//            | Q.Concat [] -> Q.Concat []
-//            | _ ->
-//                let gs, os', body =
-//                  match xs with
-//                    | Q.For (_, gs, os', body) -> gs, os', body
-//                    | Q.Concat (_::_)
-//                    | Q.Singleton _
-//                    | Q.Table _ ->
-//                        (* I think we can omit the `Table case as it
-//                           can never occur *)
-//                        (* eta-expand *)
-//                        eta_expand_list xs
-//                    | _ -> assert false in
-//                let xs = Q.For (None, gs, os', body) in
-//                  begin
-//                    match f with
-//                      | Q.Closure (([x], os), closure_env) ->
-//                          let os =
-//                            let env = bind (env ++ closure_env) (x, Q.tail_of_t xs) in
-//                              let o = norm_comp env os in
-//                                match o with
-//                                  | Q.Record fields ->
-//                                      List.rev (StringMap.fold (fun _ o os -> o::os) fields [])
-//                                  | _ -> assert false
-//                          in
-//                            Q.For (None, gs, os @ os', body)
-//                      | _ -> assert false
-//                  end
-//        end
-//    | Q.Primitive "not", [v] ->
-//      Q.reduce_not (v)
-//    | Q.Primitive "&&", [v; w] ->
-//      Q.reduce_and (v, w)
-//    | Q.Primitive "||", [v; w] ->
-//      Q.reduce_or (v, w)
-//    | Q.Primitive "==", [v; w] ->
-//      Q.reduce_eq (v, w)
-//    | Q.Primitive f, args ->
-//        Q.Apply (Q.Primitive f, args)
-//    | Q.If (c, t, e), args ->
-//        Q.reduce_if_condition (c, apply env (t, args), apply env (e, args))
-//    | Q.Apply (f, args), args' ->
-//        apply env (f, args @ args')
-//    | t, _ -> query_error "Application of non-function: %s" (string_of_t t)
+  let rec norm env : t -> t = function
+    | Record fl -> Record (Map.map (fun _ -> norm env) fl)
+    | Concat xs -> reduce_concat (List.map (norm env) xs)
+    | Project (r, label) ->
+        let rec project (r, label) = 
+          match r with
+          | Record fields ->
+              assert (Map.containsKey label fields);
+              Map.find label fields
+          | If (c, t, e) -> If (c, project (t, label), project (e, label))
+          | Var (_x, field_types) ->
+              assert (Map.containsKey label field_types);
+              Project (r, label)
+          | _ -> query_error ("Error projecting from record: %s") (string_of_t r)
+        in
+        project (norm env r, label)
+    | Apply (f, xs) -> apply env (norm env f, List.map (norm env) xs)
+    | If (c, t, e) ->
+        reduce_if_condition (norm env c, norm env t, norm env e)
+    | v -> v
 
-//  and norm_comp env c = norm env (computation env c)
+  and apply env : t * t list -> t = function
+    | Closure ((xs, body), closure_env), args ->
+      (* Debug.print ("Applying closure"); *)
+      (* Debug.print ("body: " ^ Ir.show_computation body); *)
+      (* Debug.print("Applying query closure: " ^ show_t (`Closure ((xs, body), closure_env))); *)
+      (* Debug.print("args: " ^ mapstrcat ", " show_t args); *)
+        let env = env ++ closure_env in
+        let env = List.foldBack2 (fun x arg env ->
+            bind env (x, arg)) xs args env in
+        (* Debug.print("Applied"); *)
+          norm_comp env body
+    | Primitive "Cons", [x; xs] ->
+        reduce_concat [Singleton x; xs]
+    | Primitive "Concat", ([_xs; _ys] as l) ->
+        reduce_concat l
+    | Primitive "ConcatMap", [f; xs] ->
+        begin
+          match f with
+            | Closure (([x], body), closure_env) ->
+                let env = env ++ closure_env in
+                  reduce_for_source
+                    (xs, fun v -> norm_comp (bind env (x, v)) body)
+            | _ -> failwith "Query.apply"
+        end
+    | Primitive "Map", [f; xs] ->
+        begin
+          match f with
+            | Closure (([x], body), closure_env) ->
+                let env = env ++ closure_env in
+                  reduce_for_source
+                    (xs, fun v -> Singleton (norm_comp (bind env (x, v)) body))
+            | _ -> failwith "Query.apply"
+        end
+    | Primitive "SortBy", [f; xs] ->
+        begin
+          match xs with
+            | Concat [] -> xs
+            | _ ->
+                let gs, os', body =
+                  match xs with
+                    | For (gs, os', body) -> gs, os', body
+                    | Concat (_::_)
+                    | Singleton _
+                    | Table _ ->
+                        (* I think we can omit the `Table case as it
+                           can never occur *)
+                        (* eta-expand *)
+                        eta_expand_list xs
+                    | _ -> failwith "Query.apply" in
+                let xs = For (gs, os', body) in
+                  begin
+                    match f with
+                      | Closure (([x], os), closure_env) ->
+                          let os =
+                            let env = bind (env ++ closure_env) (x, tail_of_t xs) in
+                              let o = norm_comp env os in
+                                match o with
+                                  | Record fields ->
+                                      List.rev (Map.fold (fun os _ o -> o::os) [] fields)
+                                  | _ -> failwith "Query.apply"
+                          in
+                            For (gs, os @ os', body)
+                      | _ -> failwith "Query.apply"
+                  end
+        end
+    | Primitive "not", [v] ->
+      reduce_not (v)
+    | Primitive "&&", [v; w] ->
+      reduce_and (v, w)
+    | Primitive "||", [v; w] ->
+      reduce_or (v, w)
+    | Primitive "==", [v; w] ->
+      reduce_eq (v, w)
+    | Primitive f, args ->
+        Apply (Primitive f, args)
+    | If (c, t, e), args ->
+        reduce_if_condition (c, apply env (t, args), apply env (e, args))
+    | Apply (f, args), args' ->
+        apply env (f, args @ args')
+    | t, _ -> query_error "Application of non-function: %s" (string_of_t t)
+
+  // turn computation into term
+  and norm_comp env c = norm env (computation env c)
 
 //  let eval policy env e =
 //(*    Debug.print ("e: "^Ir.show_computation e); *)

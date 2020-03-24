@@ -1,7 +1,9 @@
 ﻿module Var
 
-    type var = unit
+    type var = string
 
-    let f () = ()
+    let var_counter = ref 0
 
-    let fresh_raw_var () = failwith "Var.fresh_raw_var"
+    let fresh_raw_var () = 
+      incr var_counter;
+      "var" + (!var_counter).ToString()
