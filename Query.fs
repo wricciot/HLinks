@@ -21,26 +21,24 @@
   | If         of t * t * t
   | Closure    of (Var.var list * computation) * env
   | Apply      of t * t list
-  | Singleton  of bool * t
-  | Concat     of bool * t list
-  | For        of bool * (Var.var * t) list * t list * t
-  | Dedup      of t
-  | Prom       of t
+  | Singleton  of t
+  | Concat     of t list
+  | For        of (Var.var * t) list * t list * t
+  | Squash     of t
   | Record     of Map<string, t>
   | Proj       of t * string
   | Table      of string
   and env = unit // TODO
 
-  let emptyset = Concat (false, [])
-  let emptybag = Concat (true,  [])
-
+  let nil = Concat []
+  
   let string_of_t _ = assert false  // TODO
 
   let rec tail_of_t : t -> t = fun v ->
     let tt = tail_of_t in
     match v with
-     | For (_isbag, _gs, _os, Singleton (_, Record fields)) -> Record fields
-     | For (isbag, _gs, _os, If (_, t, Concat (_,[]))) -> tt (For (isbag, _gs, _os, t))
+     | For (_gs, _os, Singleton (Record fields)) -> Record fields
+     | For (_gs, _os, If (_, t, Concat [])) -> tt (For (_gs, _os, t))
      | _ -> (* Debug.print ("v: "^string_of_t v); *) failwith "Query.tail_of_t"
 
   (** Return the type associated with an expression *)
@@ -102,8 +100,8 @@
 
   let rec unbox_list =
     function
-      | Concat (_, vs) -> concat_map unbox_list vs
-      | Singleton (_, v) -> [v]
+      | Concat vs-> concat_map unbox_list vs
+      | Singleton v -> [v]
       | _ -> raise (runtime_type_error "failed to unbox list")
 
   //let unbox_string =
@@ -119,8 +117,8 @@
   //    | _ -> raise (runtime_type_error "failed to unbox string")
 
   let rec field_types_of_list = function
-    | Concat (_, v::_) -> field_types_of_list v
-    | Singleton (_, Record fields) -> Map.map (fun _ -> type_of_expression) fields
+    | Concat (v::_) -> field_types_of_list v
+    | Singleton (Record fields) -> Map.map (fun _ -> type_of_expression) fields
     | Table table -> table_field_types table
     | _ -> failwith "Query.field_types_of_list"
 
@@ -130,7 +128,7 @@
     | Table _
     | Singleton _
     | Concat _
-    | If (_, _, Concat (_, [])) -> true
+    | If (_, _, Concat []) -> true
     | _ -> false
 
 
@@ -176,41 +174,41 @@
         (Constant (Constant.Bool true))
     | (a, b) -> Apply (Primitive "==", [a; b])
 
-  let reduce_concat isbag vs =
-    let vs = concat_map (function Concat (_,vs) -> vs | v -> [v]) vs in
+  let reduce_concat vs =
+    let vs = concat_map (function Concat vs -> vs | v -> [v]) vs in
     match vs with
     | [v] -> v
-    | vs -> Concat (isbag, vs)
+    | vs -> Concat vs
 
-  let rec reduce_where_then isbag (c, t) =
+  let rec reduce_where_then (c, t) =
     match t with
     (* optimisation *)
     | Constant (Constant.Bool true) -> t
-    | Constant (Constant.Bool false) -> Concat (isbag, [])
+    | Constant (Constant.Bool false) -> Concat []
 
-    | Concat (_, vs) ->
-        reduce_concat isbag (List.map (fun v -> reduce_where_then isbag (c, v)) vs)
-    | For (isbag, gs, os, body) ->
-        For (isbag, gs, os, reduce_where_then isbag (c, body))
-    | If (c', t', Concat (isbag, [])) ->
-        reduce_where_then isbag (reduce_and (c, c'), t')
-    | _ -> If (c, t, Concat (isbag,[]))
+    | Concat vs ->
+        reduce_concat (List.map (fun v -> reduce_where_then (c, v)) vs)
+    | For (gs, os, body) ->
+        For (gs, os, reduce_where_then (c, body))
+    | If (c', t', Concat []) ->
+        reduce_where_then (reduce_and (c, c'), t')
+    | _ -> If (c, t, Concat [])
 
-  let reduce_for_body isbag (gs, os, body) =
+  let reduce_for_body (gs, os, body) =
     match body with
-    | For (_, gs', os', body') -> For (isbag, gs @ gs', os @ os', body')
-    | _                         -> For (isbag, gs, os, body)
+    | For (gs', os', body') -> For (gs @ gs', os @ os', body')
+    | _                         -> For (gs, os, body)
 
-  let rec reduce_for_source : bool -> t * (t -> t) -> t =
-    fun isbag (source, body) ->
-    let rs = fun source -> reduce_for_source isbag (source, body) in
+  let rec reduce_for_source : t * (t -> t) -> t =
+    fun (source, body) ->
+    let rs = fun source -> reduce_for_source (source, body) in
     match source with
-        | Singleton (_,v) -> body v
-        | Concat (_,vs) ->
-            reduce_concat isbag (List.map rs vs)
-        | If (c, t, Concat (_,[])) ->
-            reduce_for_source isbag (t, fun v -> reduce_where_then isbag (c, body v))
-        | For (_, gs, os, v) ->
+        | Singleton v -> body v
+        | Concat vs ->
+            reduce_concat (List.map rs vs)
+        | If (c, t, Concat []) ->
+            reduce_for_source (t, fun v -> reduce_where_then (c, body v))
+        | For (gs, os, v) ->
         (* NOTE:
             We are relying on peculiarities of the way we manage
             the environment in order to avoid having to
@@ -220,14 +218,14 @@
             expansion of that variable rather than complaining that
             it isn't bound in the environment.
         *)
-            reduce_for_body isbag (gs, os, rs v)
+            reduce_for_body (gs, os, rs v)
         | Table table ->
             let field_types = table_field_types table in
             (* we need to generate a fresh variable in order to
                 correctly handle self joins *)
             let x = Var.fresh_raw_var () in
             (* Debug.print ("fresh variable: " ^ string_of_int x); *)
-            reduce_for_body isbag ([(x, source)], [], body (Var x))
+            reduce_for_body ([(x, source)], [], body (Var x))
         | v -> query_error "Bad source in for comprehension: %s" (string_of_t v)
 
   let rec reduce_if_body (c, t, e) =
@@ -260,19 +258,19 @@
             If (c, t, e)
         end
 
-  let reduce_if_condition isbag (c, t, e) =
+  let reduce_if_condition (c, t, e) =
     match c with
     | Constant (Constant.Bool true) -> t
     | Constant (Constant.Bool false) -> e
     | If (c', t', _) ->
-        reduce_if_body(reduce_or (reduce_and (c', t'), reduce_and (reduce_not c', t')), t, e)
+        reduce_if_body (reduce_or (reduce_and (c', t'), reduce_and (reduce_not c', t')), t, e)
     | _ ->
         if is_list t then
-            if e = emptybag || e = emptyset then
-                reduce_where_then isbag (c, t)
+            if e = nil then
+                reduce_where_then (c, t)
             else
-                reduce_concat isbag [reduce_where_then isbag (c, t);
-                            reduce_where_then isbag (reduce_not c, e)]
+                reduce_concat [reduce_where_then (c, t);
+                            reduce_where_then (reduce_not c, e)]
         else
         reduce_if_body (c, t, e)
 
