@@ -19,9 +19,9 @@ open System.Collections.Generic
   type t =
   | Constant   of Constant.t
   | Primitive  of string
-  | Var        of (Var.var * Map<string, Types.datatype>)
+  | Var        of Var.var * Map<string, Types.datatype>
   | If         of t * t * t
-  | Closure    of (Var.var list * computation) * env
+  | Closure    of (Var.var list * t) * env
   | Apply      of t * t list
   | Singleton  of t
   | Concat     of t list
@@ -34,6 +34,7 @@ open System.Collections.Generic
 
   let bind (env : env) (x, t) = Map.add x t env
   let (++) (e1 : env) (e2 : env) = Map.fold (fun acc x t -> Map.add x t acc) e1 e2
+  let lookup (env : env) v = Map.find v env
 
   let nil = Concat []
   
@@ -53,73 +54,14 @@ open System.Collections.Generic
     failwith "Query.type_of_expression"
 
   // TODO
-  //let default_of_base_type =
-  //  function
-  //    | Primitive.Bool   -> Constant (Constant.Bool false)
-  //    | Primitive.Int    -> Constant (Constant.Int 42)
-  //    | Primitive.Char   -> Constant (Constant.Char '?')
-  //    | Primitive.Float  -> Constant (Constant.Float 0.0)
-  //    | Primitive.String -> Constant (Constant.String "")
-  //    | _                -> assert false
-
-  // TODO
-  //let rec value_of_expression = fun v ->
-  //  let ve = value_of_expression in
-  //  let value_of_singleton = fun s ->
-  //    match s with
-  //      | Singleton (_,v) -> ve v
-  //      | _ -> assert false
-  //  in
-  //    match v with
-  //      | Constant (Constant.Bool   b) -> `Bool b
-  //      | Constant (Constant.Int    i) -> `Int i
-  //      | Constant (Constant.Char   c) -> `Char c
-  //      | Constant (Constant.Float  f) -> `Float f
-  //      | Constant (Constant.String s) -> Value.box_string s
-  //      | Table t -> `Table t
-  //      | Concat vs -> `List (List.map value_of_singleton vs)
-  //      | Variant (name, v) -> `Variant (name, ve v)
-  //      | XML xmlitem -> `XML xmlitem
-  //      | Record fields ->
-  //          `Record (List.rev (StringMap.fold (fun name v fields ->
-  //                                               (name, ve v)::fields)
-  //                               fields []))
-  //      | _ -> assert false
-
-  // TODO
   // let rec freshen_for_bindings : Var.var Env.Int.t -> t -> t =
   let rec freshen_for_bindings _ = failwith "Query.freshen_for_bindings"
-
-  // TODO
-  //let table_field_types (_, _, _, (fields, _, _)) =
-  let table_field_types _ = failwith "Query.table_field_types"
-
-  // TODO
-  //let unbox_pair =
-  //  function
-  //    | Record fields ->
-  //        let x = StringMap.find "1" fields in
-  //        let y = StringMap.find "2" fields in
-  //          x, y
-  //    | _ -> raise (runtime_type_error "failed to unbox pair")
 
   let rec unbox_list =
     function
       | Concat vs-> concat_map unbox_list vs
       | Singleton v -> [v]
       | _ -> raise (runtime_type_error "failed to unbox list")
-
-  //let unbox_string =
-  //  function
-  //    | Constant (Constant.String s) -> s
-  //    | (Concat _ | Singleton _) as v ->
-  //        implode
-  //          (List.map
-  //             (function
-  //                | Constant (Constant.Char c) -> c
-  //                | _ -> raise (runtime_type_error "failed to unbox string"))
-  //             (unbox_list v))
-  //    | _ -> raise (runtime_type_error "failed to unbox string")
 
   let rec field_types_of_list = function
     | Concat (v::_) -> field_types_of_list v
@@ -237,19 +179,16 @@ open System.Collections.Generic
     match t with
     | Record then_fields ->
         begin match e with
-        | Record else_fields ->
-        // FIXME
-        //assert (StringMap.equal (fun _ _ -> true) then_fields else_fields);
-        //Record
-        //(StringMap.fold
-        //   (fun name t fields ->
-        //     let e = StringMap.find name else_fields in
-        //       StringMap.add name (reduce_if_body (c, t, e)) fields)
-        //   then_fields
-        //   StringMap.empty)        
-   (* NOTE: this relies on any record variables having
-            been eta-expanded by this point *)
-            failwith "Query.reduce_if_body"
+        | Record else_fields -> 
+          assert (Map.fold (fun acc key _ -> (Map.tryFind key else_fields <> None) && acc) true then_fields);
+          Record (Map.fold
+             (fun fields name t ->
+               let e = Map.find name else_fields in
+                 Map.add name (reduce_if_body (c, t, e)) fields)
+             Map.empty
+             then_fields)        
+        (* NOTE: this relies on any record variables having
+           been eta-expanded by this point *)
         | _ -> query_error "Mismatched fields"
         end
     | _ ->
@@ -637,10 +576,43 @@ open System.Collections.Generic
 //      let e = computation env e in
 //        Q.If (c, t, e)
 
-  // TODO
-  let computation _ = failwith "Query.computation"
-
   let rec norm env : t -> t = function
+    | Var (var, _) ->
+        begin
+          match lookup env var with
+            | Var (x, field_types) ->
+                (* eta-expand record variables *)
+                eta_expand_var (x, field_types)
+            // XXX this can probably be removed for the sake of the prototype
+            | Primitive "Nil" -> nil
+            (* We could consider detecting and eta-expand tables here.
+               The only other possible sources of table values would
+               be `Special or built-in functions that return table
+               values. (Currently there are no pure built-in functions
+               that return table values.)
+               Currently eta-expansion happens later, in the SQL
+               module.
+               On second thoughts, we *never* need to explicitly
+               eta-expand tables, as it is not possible to call
+               "AsList" directly. The "asList" function in the prelude
+               is defined as:
+               fun asList(t) server {for (x <-- t) [x]}
+            *)
+            | v ->
+              (* In order to maintain the invariant that each
+                 bound variable is unique we freshen all for-bound
+                 variables in v here.
+                 This is necessary in order to ensure that each
+                 instance of a table in a self-join is given a
+                 distinct alias, as the alias is generated from the
+                 name of the variable binding the table.
+                 We are assuming that any closure-bound variables will
+                 be eliminated anyway.
+              *)
+              (* Debug.print ("env v: "^string_of_int var^" = "^string_of_t v); *)
+              // TODO implement freshen
+              freshen_for_bindings (Map.empty) v
+        end
     | Record fl -> Record (Map.map (fun _ -> norm env) fl)
     | Concat xs -> reduce_concat (List.map (norm env) xs)
     | Project (r, label) ->
@@ -671,7 +643,7 @@ open System.Collections.Generic
         let env = List.foldBack2 (fun x arg env ->
             bind env (x, arg)) xs args env in
         (* Debug.print("Applied"); *)
-          norm_comp env body
+          norm env body
     | Primitive "Cons", [x; xs] ->
         reduce_concat [Singleton x; xs]
     | Primitive "Concat", ([_xs; _ys] as l) ->
@@ -682,7 +654,7 @@ open System.Collections.Generic
             | Closure (([x], body), closure_env) ->
                 let env = env ++ closure_env in
                   reduce_for_source
-                    (xs, fun v -> norm_comp (bind env (x, v)) body)
+                    (xs, fun v -> norm (bind env (x, v)) body)
             | _ -> failwith "Query.apply"
         end
     | Primitive "Map", [f; xs] ->
@@ -691,7 +663,7 @@ open System.Collections.Generic
             | Closure (([x], body), closure_env) ->
                 let env = env ++ closure_env in
                   reduce_for_source
-                    (xs, fun v -> Singleton (norm_comp (bind env (x, v)) body))
+                    (xs, fun v -> Singleton (norm (bind env (x, v)) body))
             | _ -> failwith "Query.apply"
         end
     | Primitive "SortBy", [f; xs] ->
@@ -716,7 +688,7 @@ open System.Collections.Generic
                       | Closure (([x], os), closure_env) ->
                           let os =
                             let env = bind (env ++ closure_env) (x, tail_of_t xs) in
-                              let o = norm_comp env os in
+                              let o = norm env os in
                                 match o with
                                   | Record fields ->
                                       List.rev (Map.fold (fun os _ o -> o::os) [] fields)
@@ -741,9 +713,6 @@ open System.Collections.Generic
     | Apply (f, args), args' ->
         apply env (f, args @ args')
     | t, _ -> query_error "Application of non-function: %s" (string_of_t t)
-
-  // turn computation into term
-  and norm_comp env c = norm env (computation env c)
 
 //  let eval policy env e =
 //(*    Debug.print ("e: "^Ir.show_computation e); *)
