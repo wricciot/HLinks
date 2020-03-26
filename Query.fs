@@ -184,7 +184,7 @@ open System.Collections.Generic
   let rec reduce_if_body (c, t, e) =
     match t with
     | Record then_fields ->
-        begin match e with
+        match e with
         | Record else_fields -> 
           assert (Map.fold (fun acc key _ -> (Map.tryFind key else_fields <> None) && acc) true then_fields);
           Record (Map.fold
@@ -196,7 +196,6 @@ open System.Collections.Generic
         (* NOTE: this relies on any record variables having
            been eta-expanded by this point *)
         | _ -> query_error "Mismatched fields"
-        end
     | _ ->
         begin
         match t, e with
@@ -633,6 +632,13 @@ open System.Collections.Generic
         in
         project (norm env r, label)
     | Apply (f, xs) -> apply env (norm env f, List.map (norm env) xs)
+    | For (gs, u) -> 
+        let rec reduce_gs env = function
+        | [] -> norm env u
+        | (x,g)::gs' -> (* equivalent to xs = For gs' u, body = g, but possibly the arguments aren't normalized *)
+            reduce_for_source (norm env g, fun v -> reduce_gs (bind env (x,v)) gs')
+        in
+        reduce_gs env gs
     | If (c, t, e) ->
         reduce_if_condition (norm env c, norm env t, norm env e)
     | Dedup v -> 
