@@ -38,7 +38,7 @@ open System.Collections.Generic
   | Table      of string * Map<string, Types.datatype>
   and env = Map<string, t>
 
-  let bind (env : env) (x, t) = Map.add x t env
+  let bind env (x, t) = Map.add x t env
   (* this is according to the Links implementation, which allows bindingds in e2 to shadow those in e1*)
   let (++) (e1 : env) (e2 : env) = Map.fold (fun acc x t -> Map.add x t acc) e1 e2
   let lookup (env : env) v = Map.find v env
@@ -60,9 +60,39 @@ open System.Collections.Generic
   let rec type_of_expression : t -> Types.datatype = fun v ->
     failwith "Query.type_of_expression"
 
-  // TODO
-  // let rec freshen_for_bindings : Var.var Env.Int.t -> t -> t =
-  let rec freshen_for_bindings _ = failwith "Query.freshen_for_bindings"
+  let rec freshen_for_bindings : Map<string,Var.var> -> t -> t = fun env v -> 
+    let ffb = freshen_for_bindings env in
+      match v with
+      | For (gs, b) ->
+        let gs', env' =
+          List.fold
+            (fun (gs', env') (x, source) ->
+              let y = Var.fresh_raw_var () in
+                ((y, ffb source)::gs', bind env' (x,y)))
+            ([], env)
+            gs
+        in
+          For (List.rev gs', freshen_for_bindings env' b)
+      | If (c, t, e) -> If (ffb c, ffb t, ffb e)
+      | Table _ as t -> t
+      | Singleton v -> Singleton (ffb v)
+      | Concat vs -> Concat (List.map ffb vs)
+      | Record fields -> Record (Map.map (fun _ -> ffb) fields)
+      | Project (v, name) -> Project (ffb v, name)
+      | Dedup v' -> Dedup (ffb v')
+      | Prom v' -> Prom (ffb v')
+      | Apply (u, vs) -> Apply (ffb u, List.map ffb vs)
+      | Closure _ as c ->
+        (* we don't attempt to freshen closure bindings *)
+        c
+      | Primitive _ -> v
+      | Var (x, ts) ->
+        begin
+          match Map.tryFind x env with
+          | None -> v (* Var (x, ts) *)
+          | Some y -> Var (y, ts)
+        end
+      | Constant c -> Constant c
 
   let rec unbox_list =
     function
