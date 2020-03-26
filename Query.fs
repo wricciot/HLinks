@@ -16,6 +16,11 @@ open System.Collections.Generic
 
   let query_error error = failwith (Printf.sprintf "Query error: %s." error)
 
+  (*
+   * we use the same constructors for set/bag Singleton, Concat, For
+   * default semantics is bag, but within Prom it's set
+   * (dually, within a Dedup it's bag again)
+   *)
   type t =
   | Constant   of Constant.t
   | Primitive  of string
@@ -25,14 +30,16 @@ open System.Collections.Generic
   | Apply      of t * t list
   | Singleton  of t
   | Concat     of t list
-  | For        of (Var.var * t) list * t list * t
-  | Squash     of t
+  | For        of (Var.var * t) list * t
+  | Dedup      of t
+  | Prom       of t
   | Record     of Map<string, t>
   | Project    of t * string
-  | Table      of string
+  | Table      of string * Map<string, Types.datatype>
   and env = Map<string, t>
 
   let bind (env : env) (x, t) = Map.add x t env
+  (* this is according to the Links implementation, which allows bindingds in e2 to shadow those in e1*)
   let (++) (e1 : env) (e2 : env) = Map.fold (fun acc x t -> Map.add x t acc) e1 e2
   let lookup (env : env) v = Map.find v env
 
@@ -43,8 +50,8 @@ open System.Collections.Generic
   let rec tail_of_t : t -> t = fun v ->
     let tt = tail_of_t in
     match v with
-     | For (_gs, _os, Singleton (Record fields)) -> Record fields
-     | For (_gs, _os, If (_, t, Concat [])) -> tt (For (_gs, _os, t))
+     | For (_gs, Singleton (Record fields)) -> Record fields
+     | For (_gs, If (_, t, Concat [])) -> tt (For (_gs, t))
      | _ -> (* Debug.print ("v: "^string_of_t v); *) failwith "Query.tail_of_t"
 
   (** Return the type associated with an expression *)
@@ -66,7 +73,7 @@ open System.Collections.Generic
   let rec field_types_of_list = function
     | Concat (v::_) -> field_types_of_list v
     | Singleton (Record fields) -> Map.map (fun _ -> type_of_expression) fields
-    | Table table -> table_field_types table
+    | Table (table, ft) -> ft
     | _ -> failwith "Query.field_types_of_list"
 
 (* takes a normal form expression and returns true iff it has list type *)
@@ -135,16 +142,16 @@ open System.Collections.Generic
 
     | Concat vs ->
         reduce_concat (List.map (fun v -> reduce_where_then (c, v)) vs)
-    | For (gs, os, body) ->
-        For (gs, os, reduce_where_then (c, body))
+    | For (gs, body) ->
+        For (gs, reduce_where_then (c, body))
     | If (c', t', Concat []) ->
         reduce_where_then (reduce_and (c, c'), t')
     | _ -> If (c, t, Concat [])
 
-  let reduce_for_body (gs, os, body) =
+  let reduce_for_body (gs, body) =
     match body with
-    | For (gs', os', body') -> For (gs @ gs', os @ os', body')
-    | _                         -> For (gs, os, body)
+    | For (gs', body') -> For (gs @ gs', body')
+    | _                         -> For (gs, body)
 
   let rec reduce_for_source : t * (t -> t) -> t = 
     fun (source, body) ->
@@ -155,7 +162,7 @@ open System.Collections.Generic
             reduce_concat (List.map rs vs)
         | If (c, t, Concat []) ->
             reduce_for_source (t, fun v -> reduce_where_then (c, body v))
-        | For (gs, os, v) ->
+        | For (gs, v) ->
         (* NOTE:
             We are relying on peculiarities of the way we manage
             the environment in order to avoid having to
@@ -165,14 +172,13 @@ open System.Collections.Generic
             expansion of that variable rather than complaining that
             it isn't bound in the environment.
         *)
-            reduce_for_body (gs, os, rs v)
-        | Table table ->
-            let field_types = table_field_types table in
+            reduce_for_body (gs, rs v)
+        | Table (table, field_types) ->
             (* we need to generate a fresh variable in order to
                 correctly handle self joins *)
             let x = Var.fresh_raw_var () in
             (* Debug.print ("fresh variable: " ^ string_of_int x); *)
-            reduce_for_body ([(x, source)], [], body (Var (x, field_types)))
+            reduce_for_body ([(x, source)], body (Var (x, field_types)))
         | v -> query_error "Bad source in for comprehension: %s" (string_of_t v)
 
   let rec reduce_if_body (c, t, e) =
@@ -583,8 +589,6 @@ open System.Collections.Generic
             | Var (x, field_types) ->
                 (* eta-expand record variables *)
                 eta_expand_var (x, field_types)
-            // XXX this can probably be removed for the sake of the prototype
-            | Primitive "Nil" -> nil
             (* We could consider detecting and eta-expand tables here.
                The only other possible sources of table values would
                be `Special or built-in functions that return table
@@ -631,6 +635,20 @@ open System.Collections.Generic
     | Apply (f, xs) -> apply env (norm env f, List.map (norm env) xs)
     | If (c, t, e) ->
         reduce_if_condition (norm env c, norm env t, norm env e)
+    | Dedup v -> 
+        let rec dedup = function
+        | Prom u -> u
+        | Singleton _ | Concat [] as u -> u
+        | For (gs, u) -> For ([ for (x,g) in gs -> (x, dedup g) ], dedup u)
+        | If (c, t, e) -> If (c, dedup t, dedup e)
+        | Var _ | Table _ as u -> Dedup u (* Dedup NFs allowed on tables/variables *)
+        | u -> query_error ("Error deduplicating bag: %s") (string_of_t u)
+        in
+        dedup (norm env v)
+    | Prom v -> 
+        match norm env v with
+        | Singleton _ | Concat [] as u -> u
+        | u -> Prom u
     | v -> v
 
   and apply env : t * t list -> t = function
@@ -644,60 +662,6 @@ open System.Collections.Generic
             bind env (x, arg)) xs args env in
         (* Debug.print("Applied"); *)
           norm env body
-    | Primitive "Cons", [x; xs] ->
-        reduce_concat [Singleton x; xs]
-    | Primitive "Concat", ([_xs; _ys] as l) ->
-        reduce_concat l
-    | Primitive "ConcatMap", [f; xs] ->
-        begin
-          match f with
-            | Closure (([x], body), closure_env) ->
-                let env = env ++ closure_env in
-                  reduce_for_source
-                    (xs, fun v -> norm (bind env (x, v)) body)
-            | _ -> failwith "Query.apply"
-        end
-    | Primitive "Map", [f; xs] ->
-        begin
-          match f with
-            | Closure (([x], body), closure_env) ->
-                let env = env ++ closure_env in
-                  reduce_for_source
-                    (xs, fun v -> Singleton (norm (bind env (x, v)) body))
-            | _ -> failwith "Query.apply"
-        end
-    | Primitive "SortBy", [f; xs] ->
-        begin
-          match xs with
-            | Concat [] -> xs
-            | _ ->
-                let gs, os', body =
-                  match xs with
-                    | For (gs, os', body) -> gs, os', body
-                    | Concat (_::_)
-                    | Singleton _
-                    | Table _ ->
-                        (* I think we can omit the `Table case as it
-                           can never occur *)
-                        (* eta-expand *)
-                        eta_expand_list xs
-                    | _ -> failwith "Query.apply" in
-                let xs = For (gs, os', body) in
-                  begin
-                    match f with
-                      | Closure (([x], os), closure_env) ->
-                          let os =
-                            let env = bind (env ++ closure_env) (x, tail_of_t xs) in
-                              let o = norm env os in
-                                match o with
-                                  | Record fields ->
-                                      List.rev (Map.fold (fun os _ o -> o::os) [] fields)
-                                  | _ -> failwith "Query.apply"
-                          in
-                            For (gs, os @ os', body)
-                      | _ -> failwith "Query.apply"
-                  end
-        end
     | Primitive "not", [v] ->
       reduce_not (v)
     | Primitive "&&", [v; w] ->
@@ -719,68 +683,6 @@ open System.Collections.Generic
 //    Debug.debug_time "Query.eval" (fun () ->
 //      norm_comp (env_of_value_env policy env) e)
 //end
-
-//(* convert a regexp to a like if possible *)
-//let rec likeify v =
-//  let open Q in
-//  let quote = Str.global_replace (Str.regexp_string "%") "\\%" in
-//    match v with
-//      | Variant ("Repeat", pair) ->
-//          begin
-//            match unbox_pair pair with
-//              | Variant ("Star", _), Variant ("Any", _) -> Some ("%")
-//              | _ -> None
-//          end
-//      | Variant ("Simply", Constant (Constant.String s)) -> Some (quote s)
-//      | Variant ("Quote", Variant ("Simply", v)) ->
-//          (* TODO:
-//             detect variables and convert to a concatenation operation
-//             (this needs to happen in RLIKE compilation as well)
-//          *)
-//         let rec string =
-//            function
-//              | Constant (Constant.String s) -> Some s
-//              | Singleton (Constant (Constant.Char c)) -> Some (string_of_char c)
-//              | Concat vs ->
-//                  let rec concat =
-//                    function
-//                      | [] -> Some ""
-//                      | v::vs ->
-//                          begin
-//                            match string v with
-//                              | None -> None
-//                              | Some s ->
-//                                  begin
-//                                    match concat vs with
-//                                      | None -> None
-//                                      | Some s' -> Some (s ^ s')
-//                                  end
-//                          end
-//                  in
-//                    concat vs
-//              | _ -> None
-//          in
-//            opt_map quote (string v)
-//      | Variant ("Seq", rs) ->
-//          let rec seq =
-//            function
-//              | [] -> Some ""
-//              | r::rs ->
-//                  begin
-//                    match likeify r with
-//                      | None -> None
-//                      | Some s ->
-//                          begin
-//                            match seq rs with
-//                              | None -> None
-//                              | Some s' -> Some (s^s')
-//                          end
-//                  end
-//          in
-//            seq (unbox_list rs)
-//      | Variant ("StartAnchor", _) -> Some ""
-//      | Variant ("EndAnchor", _) -> Some ""
-//      | _ -> assert false
 
 //let rec select_clause : Sql.index -> bool -> Q.t -> Sql.select_clause =
 //  fun index unit_query v ->
