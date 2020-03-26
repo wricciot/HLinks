@@ -1,4 +1,11 @@
-﻿namespace HLinks.AssemblyInfo
+﻿(*****************************************************************************
+ ** HLinks -- Links-inspired prototype for DB queries mixing sets and bags  **
+ ** (C) 2020 The University of Edinburgh                                    **
+ ** ----------------------------------------------------------------------- **
+ ** AssemblyInfo.fs -                                                       **
+ *****************************************************************************)
+
+namespace HLinks.AssemblyInfo
 
 open System.Reflection
 open System.Runtime.CompilerServices

@@ -2,17 +2,12 @@
  ** HLinks -- Links-inspired prototype for DB queries mixing sets and bags  **
  ** (C) 2020 The University of Edinburgh                                    **
  ** ----------------------------------------------------------------------- **
- ** Var.fs - Variable names                                                 **
+ ** Main.fs - Program entry point and tests                                 **
  **                                                                         **
  ** author: Wilmer Ricciotti                                                **
  *****************************************************************************)
 
-module Var
-
-    type var = string
-
-    let var_counter = ref 0
-
-    let fresh_raw_var () = 
-      incr var_counter
-      "var" + (!var_counter).ToString()
+[<EntryPoint>]
+let main argv =
+    printfn "%A" argv
+    0 // return an integer exit code

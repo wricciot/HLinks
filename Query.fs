@@ -1,4 +1,13 @@
-﻿module Query
+﻿(*****************************************************************************
+ ** HLinks -- Links-inspired prototype for DB queries mixing sets and bags  **
+ ** (C) 2020 The University of Edinburgh                                    **
+ ** ----------------------------------------------------------------------- **
+ ** Query.fs - DB queries syntax and normalization                          **
+ **                                                                         **
+ ** author: Wilmer Ricciotti                                                **
+ *****************************************************************************)
+
+module Query
 
 open System.Collections.Generic
 

@@ -52,9 +52,8 @@
     <Compile Include="Constant.fs" />
     <Compile Include="Types.fs" />
     <Compile Include="Var.fs" />
-    <Compile Include="Value.fs" />
     <Compile Include="Query.fs" />
-    <Compile Include="Program.fs" />
+    <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="FSharp.Core">
