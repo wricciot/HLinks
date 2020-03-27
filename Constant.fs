@@ -15,3 +15,10 @@ module Constant
     | Char of char
     | Float of float
     | String of string
+
+    let string_of_t = function
+    | Bool b -> b.ToString()
+    | Int i -> i.ToString()
+    | Char c -> Printf.sprintf "'%c'" c
+    | Float f -> f.ToString()
+    | String s -> Printf.sprintf "\"%s\"" s

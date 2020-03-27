@@ -16,3 +16,5 @@ module Var
     let fresh_raw_var () = 
       incr var_counter
       "var" + (!var_counter).ToString()
+
+    let string_of_var (v : var) = v

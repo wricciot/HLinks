@@ -54,7 +54,36 @@ open System.Collections.Generic
 
   let nil = Concat []
   
-  let string_of_t _ = assert false  // TODO
+  // I daren't call this "pretty" printing but it'll do the job for now
+  let rec string_of_t = function
+  | Constant c -> Printf.sprintf "$%s" (Constant.string_of_t c)
+  | Primitive s -> Printf.sprintf "@%s" s
+  | Var (v,ft) -> Printf.sprintf "'%s" (Var.string_of_var v)
+  | If (c,t,e) -> 
+      Printf.sprintf "(if %s then %s else %s)"
+        (string_of_t c) (string_of_t t) (string_of_t e)
+  | Closure ((vs, body), _env) -> 
+      Printf.sprintf "<<%s>>%s" (vs |> List.map Var.string_of_var |> String.concat ",") (string_of_t body)
+  | Apply (t,us) -> 
+      Printf.sprintf "%s(%s)"
+        (string_of_t t) (us |> List.map string_of_t |> String.concat ",")
+  | Singleton t -> Printf.sprintf "[%s]" (string_of_t t)
+  | Concat ts -> Printf.sprintf "++[%s]" (ts |> List.map string_of_t |> String.concat ";")
+  | For (gs, body) -> 
+      Printf.sprintf "(for (%s) do %s)"
+        (gs 
+         |> List.map (fun (v,t) -> Printf.sprintf "%s <- %s" (Var.string_of_var v) (string_of_t t))
+         |> String.concat ",")
+        (string_of_t body)
+  | Dedup t -> Printf.sprintf "δ%s" (string_of_t t)
+  | Prom t -> Printf.sprintf "ι%s" (string_of_t t)
+  | Record fields -> 
+      Printf.sprintf "{%s}"
+        (fields 
+         |> Map.fold (fun acc name t -> (Printf.sprintf "%s := %s" name (string_of_t t))::acc) [] 
+         |> String.concat ";")
+  | Project (t,field) -> Printf.sprintf "%s.%s" (string_of_t t) field
+  | Table (t,_) -> Printf.sprintf "&%s" t
 
   let rec tail_of_t : t -> t = fun v ->
     let tt = tail_of_t in
