@@ -681,10 +681,10 @@ open System.Collections.Generic
                  be eliminated anyway.
               *)
               (* Debug.print ("env v: "^string_of_int var^" = "^string_of_t v); *)
-              // TODO implement freshen
-              freshen_for_bindings (Map.empty) v
+              freshen_for_bindings Map.empty v
         end
     | Record fl -> Record (Map.map (fun _ -> norm env) fl)
+    | Singleton u -> Singleton (norm env u)
     | Concat xs -> reduce_concat (List.map (norm env) xs)
     | Project (r, label) ->
         let rec project (r, label) = 

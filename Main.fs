@@ -25,7 +25,7 @@ let qTest =
     (For (["o", tbOrders],
       (For (["i", tbItems],
         If (Apply (Primitive "<", [Project (Var ("o", sOrders), "quantity"); Project (Var ("i", sItems), "quantity")]),
-          Singleton (Record (["badorder", Project (Var ("o", sOrders), "name")] |> Map.ofList)),
+          Singleton (Record (["badorder", Project (Var ("o", sOrders), "oid")] |> Map.ofList)),
           nil)))))
 
 [<EntryPoint>]
