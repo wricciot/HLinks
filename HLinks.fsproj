@@ -53,6 +53,7 @@
     <Compile Include="Types.fs" />
     <Compile Include="Var.fs" />
     <Compile Include="Query.fs" />
+    <Compile Include="Delateralize.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>

@@ -21,12 +21,12 @@ let tbOrders = Table ("Orders", sOrders)
       if (i.quantity < o.quantity) then [{ badorder := o.name}]
 *)
 let qTest = 
-  Dedup 
+  Prom (Dedup 
     (For (["o", tbOrders],
       (For (["i", tbItems],
         If (Apply (Primitive "<", [Project (Var ("o", sOrders), "quantity"); Project (Var ("i", sItems), "quantity")]),
           Singleton (Record (["badorder", Project (Var ("o", sOrders), "oid")] |> Map.ofList)),
-          nil)))))
+          nil))))))
 
 [<EntryPoint>]
 let main _argv =

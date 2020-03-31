@@ -132,6 +132,18 @@ open System.Collections.Generic
         end
       | Constant c -> Constant c
 
+  let box_pair x y =
+    [("1",x); ("2",y)]
+    |> Map.ofList
+
+  let unbox_pair =
+    function
+      | Record fields ->
+        let x = Map.find "1" fields in
+        let y = Map.find "2" fields in
+        x, y
+      | _ -> raise (runtime_type_error "failed to unbox pair")
+
   let rec unbox_list =
     function
       | Concat vs-> concat_map unbox_list vs
