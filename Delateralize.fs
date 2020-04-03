@@ -16,6 +16,11 @@ let (>>=) (o : 'a option) (f : 'a -> 'b option) =
     | Some a -> f a
     | _ -> None
 
+let (||=) o o' =
+    match o with
+    | None -> o'
+    | _ -> o
+
 let squash o = o >>= fun x -> x
 
 let rec (>>>=) (l : ('a option) list) (f : 'a -> 'b option) : ('b list) option =
@@ -59,19 +64,49 @@ let prom_delateralize gs q1 x (q2,ty2) y (q3,ty3) =
                 [Q.Project (vp,"2")]),
             Q.nil))
 
-// TODO
-let occurs_free (v : Var.var) (q : Q.t) : bool = failwith "Delateralize.occurs_free"
-let occurs_free_list (vl : (Var.var * Q.t) list) (q : Q.t) : 'a option = failwith "Delateralize.occurs_free_list"
+// Returns (Some ty) if v occurs free with type ty, None otherwise
+let occurs_free (v : Var.var) =
+    let rec occf bvs = function
+    | Q.Var (w,tyw) ->
+        if w = v && not (List.contains v bvs)
+            then Some tyw
+            else None
+    | Q.If (c,t,e) -> occf bvs c ||= occf bvs t ||= occf bvs e
+    | Q.Closure ((wl,b),e) ->
+        // XXX: to be checked
+        let bvs' = bvs @ wl @ List.map (fun (w,_) -> w) (Map.toList e) in
+        occf bvs' b ||= Map.tryPick (fun _ q -> occf bvs q) e
+    | Q.Apply (t, args) -> occf bvs t ||= List.tryPick (occf bvs) args
+    | Q.Singleton t
+    | Q.Dedup t
+    | Q.Prom t
+    | Q.Project (t,_) -> occf bvs t
+    | Q.Concat tl -> List.tryPick (occf bvs) tl
+    | Q.For (gs, b) -> 
+        let bvs'', res = List.fold (fun (bvs',acc) (w,q) -> w::bvs', acc ||= occf bvs' q) (bvs, None) gs in
+        res ||= occf bvs'' b
+    | Q.Record fl -> Map.tryPick (fun _ t -> occf bvs t) fl
+    | _ -> None
+    in occf []
+
+// Returns Some (x,qx,tyx) for the first generator x <- qx such that x occurs free with type tyx
+let rec occurs_free_gens (gs : (Var.var * Q.t) list) q =
+    match gs with
+    | [] -> None
+    | (x,qx)::gs' -> 
+        match occurs_free x (Q.For (gs',q)) with
+        | Some tyx -> Some (x,qx,tyx)
+        | None -> occurs_free_gens gs' q
 
 // returns None if q is already delateralized
 // returns Some q' if q simplifies to a less lateral q'
-let rec prom_lateral_search q =
-    let pls = prom_lateral_search in
+let rec delateralize_step q =
+    let ds = delateralize_step in
     match q with
     | Q.For (gs, q) -> 
         let rec findgs gsx = function
         | (y,Q.Prom qy as gy)::gsy -> 
-            match occurs_free_list gsx qy with 
+            match occurs_free_gens gsx qy with 
             // tail-consing is annoying, but occurs_free_list needs arguments in this order
             | None -> findgs (gsx@[gy]) gsy
             | Some (x,qx,tyx) -> Some (gsx,x,qx,tyx,y,qy,gsy)
@@ -84,34 +119,39 @@ let rec prom_lateral_search q =
             let tyy = tyx in    // FIXME!!! how can I deduce the type of y?
             Some (prom_delateralize gsx qf x (qx,tyx) y (qy,tyy))
         | None ->
-            let ogs = gs >>== (fun (z,qz) -> pls qz >>= fun qz' -> Some (z,qz')) in
-            let oq = pls q in
+            let ogs = gs >>== (fun (z,qz) -> ds qz >>= fun qz' -> Some (z,qz')) in
+            let oq = ds q in
             match ogs, oq with
             | None, None -> None
             | _ -> Some (Q.For (unopt_default ogs gs, unopt_default oq q))
     | Q.If (c,t,e) -> 
-        match pls c, pls t, pls e with
+        match ds c, ds t, ds e with
         | None, None, None -> None
         | c', t', e' -> Some (Q.If (unopt_default c' c, unopt_default t' t, unopt_default e' e))
     // XXX: can t in Apply (t,...) even contain a For? however let's perform recursion for safety
     | Q.Apply (t,args) -> 
-        let ot = pls t in
-        let oargs = args >>== pls in
+        let ot = ds t in
+        let oargs = args >>== ds in
         match ot, oargs with
         | None, None -> None
         | _ -> Some (Q.Apply (unopt_default ot t, unopt_default oargs args))
-    | Q.Singleton t -> match pls t with None -> None | Some t' -> Some (Q.Singleton t')
-    | Q.Concat tl -> match tl >>== pls with None -> None | Some tl' -> Some (Q.Concat tl')
-    | Q.Dedup t -> match pls t with None -> None | Some t' -> Some (Q.Dedup t')
-    | Q.Prom t -> match pls t with None -> None | Some t' -> Some (Q.Prom t')
+    | Q.Singleton t -> match ds t with None -> None | Some t' -> Some (Q.Singleton t')
+    | Q.Concat tl -> match tl >>== ds with None -> None | Some tl' -> Some (Q.Concat tl')
+    | Q.Dedup t -> match ds t with None -> None | Some t' -> Some (Q.Dedup t')
+    | Q.Prom t -> match ds t with None -> None | Some t' -> Some (Q.Prom t')
     | Q.Record fl ->
-        let ofl = Map.toList fl >>== fun (z,qz) -> pls qz >>= fun qz' -> Some (z,qz') in
+        let ofl = Map.toList fl >>== fun (z,qz) -> ds qz >>= fun qz' -> Some (z,qz') in
         match ofl with
         | None -> None
         | Some fl' -> Some (Q.Record (Map.ofList fl'))
     | Q.Project (t,f) -> 
-        match pls t with
+        match ds t with
         | None -> None 
         | Some t' -> Some (Q.Project (t',f))
     (* XXX: assumes no Closures are left *)
     | _ -> None
+
+let rec delateralize q =
+    match delateralize_step q with
+    | Some q' -> delateralize q'
+    | None -> q
