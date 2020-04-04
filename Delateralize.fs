@@ -100,6 +100,7 @@ let rec occurs_free_gens (gs : (Var.var * Q.t) list) q =
 
 // returns None if q is already delateralized
 // returns Some q' if q simplifies to a less lateral q'
+// (this actually performs PARALLEL delateralization steps)
 let rec delateralize_step q =
     let ds = delateralize_step in
     match q with
@@ -152,6 +153,7 @@ let rec delateralize_step q =
     | _ -> None
 
 let rec delateralize q =
+    let q = Q.norm Map.empty q in
     match delateralize_step q with
     | Some q' -> delateralize q'
     | None -> q

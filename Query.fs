@@ -253,13 +253,16 @@ open System.Collections.Generic
             it isn't bound in the environment.
         *)
             reduce_for_body (gs, rs v)
-        | Table (table, field_types) ->
+        | Table (table, field_types) 
+        | Dedup (Table (table, field_types)) ->
             (* we need to generate a fresh variable in order to
                 correctly handle self joins *)
             let x = Var.fresh_raw_var () in
             (* Debug.print ("fresh variable: " ^ string_of_int x); *)
             reduce_for_body ([(x, source)], body (Var (x, field_types)))
-        | v -> query_error "Bad source in for comprehension: %s" (string_of_t v)
+        // BUGBUG: what should we do when we have a Prom?
+        | Prom _ -> let x = Var.fresh_raw_var () in reduce_for_body ([(x,source)], body (Var (x, Map.empty)))
+        | v -> query_error (Printf.sprintf "Bad source in for comprehension: %s" (string_of_t v))
 
   let rec reduce_if_body (c, t, e) =
     match t with
@@ -708,7 +711,7 @@ open System.Collections.Generic
           | Var (_x, field_types) ->
               assert (Map.containsKey label field_types);
               Project (r, label)
-          | _ -> query_error ("Error projecting from record: %s") (string_of_t r)
+          | _ -> query_error (Printf.sprintf ("Error projecting from record: %s") (string_of_t r))
         in
         project (norm env r, label)
     | Apply (f, xs) -> apply env (norm env f, List.map (norm env) xs)
@@ -728,7 +731,11 @@ open System.Collections.Generic
         | For (gs, u) -> For ([ for (x,g) in gs -> (x, dedup g) ], dedup u)
         | If (c, t, e) -> If (c, dedup t, dedup e)
         | Var _ | Table _ as u -> Dedup u (* Dedup NFs allowed on tables/variables *)
-        | u -> query_error ("Error deduplicating bag: %s") (string_of_t u)
+        // XXX normally this should never happen, so an error would be ok; 
+        // however for testing purposes it is sometimes desirable to have ill-formed queries;
+        // just make sure to revert this code
+        // | u -> query_error (Printf.sprintf ("Error deduplicating bag: %s") (string_of_t u))
+        | u -> u
         in
         dedup (norm env v)
     | Prom v -> 
@@ -762,7 +769,7 @@ open System.Collections.Generic
         reduce_if_condition (c, apply env (t, args), apply env (e, args))
     | Apply (f, args), args' ->
         apply env (f, args @ args')
-    | t, _ -> query_error "Application of non-function: %s" (string_of_t t)
+    | t, _ -> query_error (Printf.sprintf "Application of non-function: %s" (string_of_t t))
 
 //  let eval policy env e =
 //(*    Debug.print ("e: "^Ir.show_computation e); *)
