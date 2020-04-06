@@ -95,8 +95,30 @@ open System.Collections.Generic
   (** Return the type associated with an expression *)
   (* Inferring the type of an expression is straightforward because all
      variables are annotated with their types. *)
-  let rec type_of_expression : t -> Types.datatype = fun v ->
-    failwith "Query.type_of_expression"
+  let rec type_of_expression v : Types.datatype =
+      let te = type_of_expression in
+      let record fields : Types.datatype =
+        Types.make_record_type (Map.map (fun _ -> te) fields)
+      in
+        match v with
+          | Var (_,ftys) -> Types.make_record_type ftys
+          | Concat [] -> Types.make_list_type(Types.unit_type)
+          | Concat (v::_) -> te v
+          | For (_,body) -> te body
+          | Singleton t -> Types.make_list_type (te t)
+          | Record fields -> record fields
+          | If (_, t, _) -> te t
+          | Dedup u
+          | Prom u -> te u
+          | Table (_, ftys) -> Types.make_record_type ftys
+          | Constant (Constant.Bool   _) -> Types.bool_type
+          | Constant (Constant.Int    _) -> Types.int_type
+          | Constant (Constant.Char   _) -> Types.char_type
+          | Constant (Constant.Float  _) -> Types.float_type
+          | Constant (Constant.String _) -> Types.string_type
+          | Project (Var (_, field_types), name) -> Map.find name field_types
+          | Apply _ | Primitive _ -> Types.unit_type    // HACKHACK
+          | e -> failwith ("Can't deduce type for: " + string_of_t e)
 
   let rec freshen_for_bindings : Map<string,Var.var> -> t -> t = fun env v -> 
     let ffb = freshen_for_bindings env in
@@ -233,15 +255,15 @@ open System.Collections.Generic
     | For (gs', body') -> For (gs @ gs', body')
     | _                         -> For (gs, body)
 
-  let rec reduce_for_source : t * (t -> t) -> t = 
-    fun (source, body) ->
-    let rs = fun source -> reduce_for_source (source, body) in
+  let rec reduce_for_source : t * Types.datatype * (t -> t) -> t = 
+    fun (source, ty, body) ->
+    let rs = fun (source,ty) -> reduce_for_source (source, ty, body) in
     match source with
         | Singleton v -> body v
         | Concat vs ->
-            reduce_concat (List.map rs vs)
+            reduce_concat (List.map (fun x -> rs (x,ty)) vs)
         | If (c, t, Concat []) ->
-            reduce_for_source (t, fun v -> reduce_where_then (c, body v))
+            reduce_for_source (t, ty, fun v-> reduce_where_then (c, body v))
         | For (gs, v) ->
         (* NOTE:
             We are relying on peculiarities of the way we manage
@@ -252,7 +274,8 @@ open System.Collections.Generic
             expansion of that variable rather than complaining that
             it isn't bound in the environment.
         *)
-            reduce_for_body (gs, rs v)
+            let tyv = type_of_expression v in
+            reduce_for_body (gs, rs (v,tyv))
         | Table (table, field_types) 
         | Dedup (Table (table, field_types)) ->
             (* we need to generate a fresh variable in order to
@@ -261,7 +284,15 @@ open System.Collections.Generic
             (* Debug.print ("fresh variable: " ^ string_of_int x); *)
             reduce_for_body ([(x, source)], body (Var (x, field_types)))
         // BUGBUG: what should we do when we have a Prom?
-        | Prom _ -> let x = Var.fresh_raw_var () in reduce_for_body ([(x,source)], body (Var (x, Map.empty)))
+        // BUGBUG the type of x is wrong: can we receive it as an argument?
+        | Prom _ -> 
+            let x = Var.fresh_raw_var () in 
+            let field_types = 
+                match type_of_expression source with
+                | Types.ListTy (Types.RcdTy ftys) -> ftys
+                // BUGBUG can't synthesize a type for the variable (but then it probably doesn't matter)
+                | _ -> Map.empty
+            in reduce_for_body ([(x,source)], body (Var (x, field_types)))
         | v -> query_error (Printf.sprintf "Bad source in for comprehension: %s" (string_of_t v))
 
   let rec reduce_if_body (c, t, e) =
@@ -719,7 +750,8 @@ open System.Collections.Generic
         let rec reduce_gs env = function
         | [] -> norm env u
         | (x,g)::gs' -> (* equivalent to xs = For gs' u, body = g, but possibly the arguments aren't normalized *)
-            reduce_for_source (norm env g, fun v -> reduce_gs (bind env (x,v)) gs')
+            let tyg = type_of_expression g in
+            reduce_for_source (norm env g, tyg, fun v -> reduce_gs (bind env (x,v)) gs')
         in
         reduce_gs env gs
     | If (c, t, e) ->
@@ -735,7 +767,7 @@ open System.Collections.Generic
         // however for testing purposes it is sometimes desirable to have ill-formed queries;
         // just make sure to revert this code
         // | u -> query_error (Printf.sprintf ("Error deduplicating bag: %s") (string_of_t u))
-        | u -> u
+        | u -> Dedup u
         in
         dedup (norm env v)
     | Prom v -> 

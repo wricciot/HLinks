@@ -10,8 +10,9 @@ module Main
 
 open Query
 
-let sItems = [("name",()); ("quantity",())] |> Map.ofList 
-let sOrders = [("oid",()); ("item",()); ("quantity",())] |> Map.ofList
+let dummy = Types.unit_type
+let sItems = [("name",dummy); ("quantity",dummy)] |> Map.ofList 
+let sOrders = [("oid",dummy); ("item",dummy); ("quantity",dummy)] |> Map.ofList
 let tbItems = Table ("Items", sItems)
 let tbOrders = Table ("Orders", sOrders)
 
@@ -33,10 +34,10 @@ let qTest =
 for x <- table, y <- ID(for z <- ID(Singleton (const(x))) do const(z)) do const(x,y)
 *)
 
-let vx = Var ("x", [("fx",())] |> Map.ofList)
-let vy = Var ("y", [("fy",())] |> Map.ofList)
-let vz = Var ("z", [("fz",())] |> Map.ofList)
-let tbDelat = Table ("TableX", [("fx",())] |> Map.ofList)
+let vx = Var ("x", [("fx",dummy)] |> Map.ofList)
+let vy = Var ("y", [("fy",dummy)] |> Map.ofList)
+let vz = Var ("z", [("fz",dummy)] |> Map.ofList)
+let tbDelat = Table ("TableX", [("fx",dummy)] |> Map.ofList)
 // wraps a query so that it cannot be normalized out
 let blobOf q = For (["x'", tbDelat], Singleton q) |> Dedup |> Prom
 
@@ -52,7 +53,10 @@ let main _argv =
     let thequery = qDedup in
     printfn "*** printing test query"
     printfn "%s" (string_of_t thequery)
-    let thequery = norm Map.empty thequery in
+    let nquery = norm Map.empty thequery in
     printfn "*** printing normalized test query"
+    printfn "%s" (string_of_t nquery)
+    let thequery = Delateralize.delateralize thequery in
+    printfn "*** printing delateralized test query"
     printfn "%s" (string_of_t thequery)
     0 // return an integer exit code

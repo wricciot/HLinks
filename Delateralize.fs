@@ -55,7 +55,8 @@ let graph_query (q1,ty1) x (q2,ty2) =
 let prom_delateralize gs q1 x (q2,ty2) y (q3,ty3) =
     let p = Var.fresh_raw_var () in
     // FIXME types of 1 and 2 should be RecordType ty2, RecordType ty3
-    let typ = [("1",());("2",())] |> Map.ofList in
+    let dummy = Types.unit_type
+    let typ = [("1",dummy);("2",dummy)] |> Map.ofList in
     let vp = Q.Var (p,typ) in
     let eq_query a b = Q.Apply (Q.Primitive "==", [a;b]) in
     Q.For (gs @ [(p, Q.Prom (graph_query (Q.Dedup q2,ty2) x (q3,ty3)))],
