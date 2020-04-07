@@ -154,7 +154,12 @@ let rec delateralize_step q =
     | _ -> None
 
 let rec delateralize q =
-    let q = Q.norm Map.empty q in
+    let q = Q.norm false Map.empty q in
+    Printf.printfn "*** normalization step"
+    Printf.printfn "%s\n" (Q.string_of_t q)
     match delateralize_step q with
-    | Some q' -> delateralize q'
+    | Some q' -> 
+        Printf.printfn "*** delateralization step"
+        Printf.printfn "%s\n" (Q.string_of_t q')
+        delateralize q'
     | None -> q

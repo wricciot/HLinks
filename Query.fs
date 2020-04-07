@@ -695,11 +695,12 @@ open System.Collections.Generic
 //      let e = computation env e in
 //        Q.If (c, t, e)
 
-  let rec norm env : t -> t = function
+  let rec norm in_dedup env : t -> t = function
     | Var (var, _) ->
         begin
           match lookup env var with
-            | Var (x, field_types) ->
+            // XXX it should never be in_dedup, should it?
+            | Var (x, field_types) when not in_dedup ->
                 (* eta-expand record variables *)
                 eta_expand_var (x, field_types)
             (* We could consider detecting and eta-expand tables here.
@@ -727,11 +728,11 @@ open System.Collections.Generic
                  be eliminated anyway.
               *)
               (* Debug.print ("env v: "^string_of_int var^" = "^string_of_t v); *)
-              freshen_for_bindings Map.empty v
+                freshen_for_bindings Map.empty (retn in_dedup v)
         end
-    | Record fl -> Record (Map.map (fun _ -> norm env) fl)
-    | Singleton u -> Singleton (norm env u)
-    | Concat xs -> reduce_concat (List.map (norm env) xs)
+    | Record fl -> Record (Map.map (fun _ -> norm false env) fl)
+    | Singleton u -> Singleton (norm false env u)
+    | Concat xs -> reduce_concat (List.map (norm in_dedup env) xs)
     | Project (r, label) as orig ->
         let rec project (r, label) = 
           match r with
@@ -745,39 +746,27 @@ open System.Collections.Generic
           | Project _ -> Project (r, label) 
           | _ -> query_error (Printf.sprintf ("Error projecting from record: %s\nOriginal term: %s") (string_of_t r) (string_of_t orig))
         in
-        project (norm env r, label)
-    | Apply (f, xs) -> apply env (norm env f, List.map (norm env) xs)
+        retn in_dedup (project (norm false env r, label))
+    | Apply (f, xs) -> apply in_dedup env (norm false env f, List.map (norm false env) xs)
     | For (gs, u) -> 
         let rec reduce_gs env = function
-        | [] -> norm env u
+        | [] -> norm in_dedup env u
         | (x,g)::gs' -> (* equivalent to xs = For gs' u, body = g, but possibly the arguments aren't normalized *)
             let tyg = type_of_expression g in
-            reduce_for_source (norm env g, tyg, fun v -> reduce_gs (bind env (x,v)) gs')
+            reduce_for_source (norm in_dedup env g, tyg, fun v -> reduce_gs (bind env (x,v)) gs')
         in
         reduce_gs env gs
     | If (c, t, e) ->
-        reduce_if_condition (norm env c, norm env t, norm env e)
-    | Dedup v -> 
-        let rec dedup = function
-        | Prom u -> u
-        | Singleton _ | Concat [] as u -> u
-        | For (gs, u) -> For ([ for (x,g) in gs -> (x, dedup g) ], dedup u)
-        | If (c, t, e) -> If (c, dedup t, dedup e)
-        | Var _ | Table _ as u -> Dedup u (* Dedup NFs allowed on tables/variables *)
-        // XXX normally this should never happen, so an error would be ok; 
-        // however for testing purposes it is sometimes desirable to have ill-formed queries;
-        // just make sure to revert this code
-        // | u -> query_error (Printf.sprintf ("Error deduplicating bag: %s") (string_of_t u))
-        | u -> Dedup u
-        in
-        dedup (norm env v)
+        reduce_if_condition (norm false env c, norm in_dedup env t, norm in_dedup env e)
+    | Dedup v -> norm true env v
+    | Prom v when in_dedup -> norm false env v
     | Prom v -> 
-        match norm env v with
+        match norm false env v with
         | Singleton _ | Concat [] as u -> u
         | u -> Prom u
-    | v -> v
+    | v -> retn in_dedup v
 
-  and apply env : t * t list -> t = function
+  and apply in_dedup env : t * t list -> t = function
     | Closure ((xs, body), closure_env), args ->
       (* Debug.print ("Applying closure"); *)
       (* Debug.print ("body: " ^ Ir.show_computation body); *)
@@ -787,7 +776,8 @@ open System.Collections.Generic
         let env = List.foldBack2 (fun x arg env ->
             bind env (x, arg)) xs args env in
         (* Debug.print("Applied"); *)
-          norm env body
+          norm in_dedup env body
+    // in_dedup shouldn't happen with primitives that don't return collections so we ignore it
     | Primitive "not", [v] ->
       reduce_not (v)
     | Primitive "&&", [v; w] ->
@@ -797,12 +787,24 @@ open System.Collections.Generic
     | Primitive "==", [v; w] ->
       reduce_eq (v, w)
     | Primitive f, args ->
-        Apply (Primitive f, args)
+        Apply (Primitive f, args) |> retn in_dedup
     | If (c, t, e), args ->
-        reduce_if_condition (c, apply env (t, args), apply env (e, args))
+        reduce_if_condition (c, apply in_dedup env (t, args), apply in_dedup env (e, args))
     | Apply (f, args), args' ->
-        apply env (f, args @ args')
+        apply in_dedup env (f, args @ args')
     | t, _ -> query_error (Printf.sprintf "Application of non-function: %s" (string_of_t t))
+  and dedup = function
+    | Prom u -> u
+    | Singleton _ | Concat [] as u -> u
+    | For (gs, u) -> For ([ for (x,g) in gs -> (x, dedup g) ], dedup u)
+    | If (c, t, e) -> If (c, dedup t, dedup e)
+    | Var _ | Table _ as u -> Dedup u (* Dedup NFs allowed on tables/variables *)
+    // XXX normally this should never happen, so an error would be ok; 
+    // however for testing purposes it is sometimes desirable to have ill-formed queries;
+    // just make sure to revert this code
+    // | u -> query_error (Printf.sprintf ("Error deduplicating bag: %s") (string_of_t u))
+    | u -> Dedup u
+  and retn in_dedup u = if in_dedup then Dedup u else u
 
 //  let eval policy env e =
 //(*    Debug.print ("e: "^Ir.show_computation e); *)

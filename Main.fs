@@ -52,11 +52,8 @@ let qDedup =
 let main _argv =
     let thequery = qDedup in
     printfn "*** printing test query"
-    printfn "%s" (string_of_t thequery)
-    let nquery = norm Map.empty thequery in
-    printfn "*** printing normalized test query"
-    printfn "%s" (string_of_t nquery)
+    printfn "%s\n" (string_of_t thequery)
     let thequery = Delateralize.delateralize thequery in
     printfn "*** printing delateralized test query"
-    printfn "%s" (string_of_t thequery)
+    printfn "%s\n" (string_of_t thequery)
     0 // return an integer exit code
