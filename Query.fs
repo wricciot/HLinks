@@ -732,7 +732,7 @@ open System.Collections.Generic
     | Record fl -> Record (Map.map (fun _ -> norm env) fl)
     | Singleton u -> Singleton (norm env u)
     | Concat xs -> reduce_concat (List.map (norm env) xs)
-    | Project (r, label) ->
+    | Project (r, label) as orig ->
         let rec project (r, label) = 
           match r with
           | Record fields ->
@@ -742,7 +742,8 @@ open System.Collections.Generic
           | Var (_x, field_types) ->
               assert (Map.containsKey label field_types);
               Project (r, label)
-          | _ -> query_error (Printf.sprintf ("Error projecting from record: %s") (string_of_t r))
+          | Project _ -> Project (r, label) 
+          | _ -> query_error (Printf.sprintf ("Error projecting from record: %s\nOriginal term: %s") (string_of_t r) (string_of_t orig))
         in
         project (norm env r, label)
     | Apply (f, xs) -> apply env (norm env f, List.map (norm env) xs)

@@ -44,8 +44,8 @@ let blobOf q = For (["x'", tbDelat], Singleton q) |> Dedup |> Prom
 let qDedup = 
     For ([("x", tbDelat); 
           ("y", Prom (Dedup 
-            (For (["z", blobOf (Apply (Primitive "opaque1", [vx]))],
-                blobOf (Apply (Primitive "opaque1", [vz]))))))],
+            (For (["z", blobOf (* (Apply (Primitive "opaque1", [vx])) *) vx],
+                blobOf (* (Apply (Primitive "opaque1", [vz])) *) vz))))],
         blobOf (Apply (Primitive "opaque2", [vx;vy])))
 
 [<EntryPoint>]
