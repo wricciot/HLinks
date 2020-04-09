@@ -34,19 +34,25 @@ let qTest =
 for x <- table, y <- ID(for z <- ID(Singleton (const(x))) do const(z)) do const(x,y)
 *)
 
-let vx = Var ("x", [("fx",dummy)] |> Map.ofList)
-let vy = Var ("y", [("fy",dummy)] |> Map.ofList)
-let vz = Var ("z", [("fz",dummy)] |> Map.ofList)
+let tyX = [("fx",dummy)] |> Map.ofList
+let var x = Var (x, tyX)
+let vx = var "x"
+let vy = var "y"
+let vz = var "z"
+
+
 let tbDelat = Table ("TableX", [("fx",dummy)] |> Map.ofList)
 // wraps a query so that it cannot be normalized out
 let blobOf q = For (["x'", tbDelat], Singleton q) |> Dedup |> Prom
 
 let qDedup = 
-    For ([("x", tbDelat); 
-          ("y", Prom (Dedup 
-            (For (["z", blobOf (* (Apply (Primitive "opaque1", [vx])) *) vx],
-                blobOf (* (Apply (Primitive "opaque1", [vz])) *) vz))))],
-        blobOf (Apply (Primitive "opaque2", [vx;vy])))
+    For ([("x1", tbDelat) 
+         ;("x2", Prom (Dedup (For (["z", blobOf (var "x1")], Singleton (var "z")))))
+         ;("x3", Prom (Dedup (For ([("z1", blobOf (var "x1")); ("z2", blobOf (var "x2"))], Singleton (box_pair (var "z1") (var "z2"))))))
+         ;("x4", Prom (Dedup 
+                (For ([("z1", blobOf (var "x1")); ("z2", blobOf (var "x2")); ("z3", blobOf (var "x3"))], 
+                    Singleton (box_pair (var "z1") (box_pair (var "z2") (var "z3")))))))],
+        blobOf (Apply (Primitive "opaque4", [var "x1"; var "x2"; var "x3"; var "x4"])))
 
 [<EntryPoint>]
 let main _argv =

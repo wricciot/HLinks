@@ -116,7 +116,11 @@ open System.Collections.Generic
           | Constant (Constant.Char   _) -> Types.char_type
           | Constant (Constant.Float  _) -> Types.float_type
           | Constant (Constant.String _) -> Types.string_type
-          | Project (Var (_, field_types), name) -> Map.find name field_types
+          //| Project (Var (_, field_types), name) -> Map.find name field_types
+          | Project (w, name) -> 
+            match te w with
+            | Types.RcdTy field_types -> Map.find name field_types
+            | _ -> failwith (Printf.sprintf "%s was expected to have record type, but it doesn't" (string_of_t w))
           | Apply _ | Primitive _ -> Types.unit_type    // HACKHACK
           | e -> failwith ("Can't deduce type for: " + string_of_t e)
 
@@ -157,6 +161,7 @@ open System.Collections.Generic
   let box_pair x y =
     [("1",x); ("2",y)]
     |> Map.ofList
+    |> Record
 
   let unbox_pair =
     function

@@ -46,8 +46,7 @@ let rec (>>==) (l : 'a list) (f : 'a -> 'a option) : 'a list option =
 let graph_query (q1,ty1) x (q2,ty2) =
     let y = Var.fresh_raw_var () in
     Q.For ([(x, q1); (y, q2)], 
-        Q.Singleton (
-            Q.Record (Q.box_pair (Q.Var (x,ty1)) (Q.Var (y,ty2)))))
+        Q.Singleton (Q.box_pair (Q.Var (x,ty1)) (Q.Var (y,ty2))))
 
 // DELATERALIZING REWRITE for iota
 // for gs, y :- I(q3) do q1     -- s.t. x :- q2 in gs
