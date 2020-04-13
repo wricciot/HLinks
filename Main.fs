@@ -45,7 +45,12 @@ let tbDelat = Table ("TableX", [("fx",dummy)] |> Map.ofList)
 // wraps a query so that it cannot be normalized out
 let blobOf q = For (["x'", tbDelat], Singleton q) |> Dedup |> Prom
 
-let qDedup = 
+let qDelat = 
+    For ([("x1", tbDelat) 
+         ;("x2", Prom (Dedup (For (["z", blobOf (var "x1")], Singleton (var "z")))))],
+        blobOf (Apply (Primitive "opaque4", [var "x1"; var "x2"])))
+
+let qDelatNested = 
     For ([("x1", tbDelat) 
          ;("x2", Prom (Dedup (For (["z", blobOf (var "x1")], Singleton (var "z")))))
          ;("x3", Prom (Dedup (For ([("z1", blobOf (var "x1")); ("z2", blobOf (var "x2"))], Singleton (box_pair (var "z1") (var "z2"))))))
@@ -54,9 +59,29 @@ let qDedup =
                     Singleton (box_pair (var "z1") (box_pair (var "z2") (var "z3")))))))],
         blobOf (Apply (Primitive "opaque4", [var "x1"; var "x2"; var "x3"; var "x4"])))
 
+(* for (x <- Table, z <- prom (for y <- dedup Table) when x.a = y.a [(a = x.a)]) [(a = z.a)]
+*)
+
+let qDelatSimple =
+    For ([("x", tbDelat)
+         ;("z", Prom
+            (For ([("y", Dedup tbDelat)], 
+                If (Apply (Primitive "==", [Project (var "x", "fx"); Project (var "y", "fx")]),
+                    Singleton (Record (Map.ofList ["fx", Project (var "x", "fx")])),
+                    Concat []))))],
+         Singleton (Record (Map.ofList ["fx", Project (var "z", "fx")])))
+
+let qDelatPromBody = 
+    For ([("x", tbDelat)],
+        Prom 
+            (For (["y", Dedup tbDelat],
+                If (Apply (Primitive "==", [Project (var "x", "fx"); Project (var "y", "fx")]),
+                    Singleton (Record (Map.ofList ["fx", Project (var "x", "fx")])),
+                    Concat []))))
+
 [<EntryPoint>]
 let main _argv =
-    let thequery = qDedup in
+    let thequery = qDelatPromBody in
     printfn "*** printing test query"
     printfn "%s\n" (string_of_t thequery)
     let thequery = Delateralize.delateralize thequery in

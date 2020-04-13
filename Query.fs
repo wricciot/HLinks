@@ -189,6 +189,8 @@ open System.Collections.Generic
     | Table _
     | Singleton _
     | Concat _
+    | Dedup _
+    | Prom _
     | If (_, _, Concat []) -> true
     | _ -> false
 
@@ -236,10 +238,21 @@ open System.Collections.Generic
     | (a, b) -> Apply (Primitive "==", [a; b])
 
   let reduce_concat vs =
-    let vs = concat_map (function Concat vs -> vs | v -> [v]) vs in
+    let vs = 
+        concat_map (function 
+        | Prom (Concat []) -> []
+        | Prom (Singleton v) -> [v]
+        | Concat vs -> vs 
+        | v -> [v]) vs in
     match vs with
     | [v] -> v
     | vs -> Concat vs
+
+  let field_types_of_for_var gen = 
+    match type_of_expression gen with
+    | Types.ListTy (Types.RcdTy ftys) -> ftys
+    // BUGBUG can't synthesize a type for the variable (but then it probably doesn't matter)
+    | _ -> Map.empty
 
   let rec reduce_where_then (c, t) =
     match t with
@@ -247,6 +260,7 @@ open System.Collections.Generic
     | Constant (Constant.Bool true) -> t
     | Constant (Constant.Bool false) -> Concat []
 
+    | Prom t' -> Prom (reduce_where_then (c, t'))
     | Concat vs ->
         reduce_concat (List.map (fun v -> reduce_where_then (c, v)) vs)
     | For (gs, body) ->
@@ -292,11 +306,7 @@ open System.Collections.Generic
         // BUGBUG the type of x is wrong: can we receive it as an argument?
         | Prom _ -> 
             let x = Var.fresh_raw_var () in 
-            let field_types = 
-                match type_of_expression source with
-                | Types.ListTy (Types.RcdTy ftys) -> ftys
-                // BUGBUG can't synthesize a type for the variable (but then it probably doesn't matter)
-                | _ -> Map.empty
+            let field_types = field_types_of_for_var source
             in reduce_for_body ([(x,source)], body (Var (x, field_types)))
         | v -> query_error (Printf.sprintf "Bad source in for comprehension: %s" (string_of_t v))
 
@@ -755,7 +765,16 @@ open System.Collections.Generic
     | Apply (f, xs) -> apply in_dedup env (norm false env f, List.map (norm false env) xs)
     | For (gs, u) -> 
         let rec reduce_gs env = function
-        | [] -> norm in_dedup env u
+        | [] -> 
+            match norm in_dedup env u with
+            // this special case allows us to hoist a non-standard For body into a generator
+            | Prom _ as u' ->
+                let z = Var.fresh_raw_var () in
+                let tyz = type_of_expression u' in
+                let ftz = field_types_of_for_var u' in
+                let vz = Var (z, ftz) in
+                reduce_for_source (u', tyz, fun v -> norm in_dedup (bind env (z,v)) (Singleton vz))
+            | u' -> u'
         | (x,g)::gs' -> (* equivalent to xs = For gs' u, body = g, but possibly the arguments aren't normalized *)
             let tyg = type_of_expression g in
             reduce_for_source (norm in_dedup env g, tyg, fun v -> reduce_gs (bind env (x,v)) gs')
@@ -765,10 +784,11 @@ open System.Collections.Generic
         reduce_if_condition (norm false env c, norm in_dedup env t, norm in_dedup env e)
     | Dedup v -> norm true env v
     | Prom v when in_dedup -> norm false env v
-    | Prom v -> 
-        match norm false env v with
-        | Singleton _ | Concat [] as u -> u
-        | u -> Prom u
+    | Prom v (* when not in_dedup *) -> 
+        //match norm false env v with
+        //| Singleton _ | Concat [] as u -> u
+        //| u -> Prom u
+        Prom (norm false env v)
     | v -> retn in_dedup v
 
   and apply in_dedup env : t * t list -> t = function
