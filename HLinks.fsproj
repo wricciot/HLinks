@@ -54,6 +54,7 @@
     <Compile Include="Var.fs" />
     <Compile Include="Query.fs" />
     <Compile Include="Delateralize.fs" />
+    <Compile Include="SqlGenerator.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
   <ItemGroup>

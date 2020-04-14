@@ -9,7 +9,7 @@
 
 module Query
 
-open System.Collections.Generic
+  open System.Collections.Generic
 
   type computation = unit
 
@@ -837,111 +837,6 @@ open System.Collections.Generic
 //      norm_comp (env_of_value_env policy env) e)
 //end
 
-//let rec select_clause : Sql.index -> bool -> Q.t -> Sql.select_clause =
-//  fun index unit_query v ->
-//  (*  Debug.print ("select_clause: "^string_of_t v); *)
-//  let open Q in
-//  match v with
-//    | Concat _ -> assert false
-//    | For (_, [], _, body) ->
-//        select_clause index unit_query body
-//    | For (_, (x, Table (_db, table, _keys, _row))::gs, os, body) ->
-//        let body = select_clause index unit_query (For (None, gs, [], body)) in
-//        let os = List.map (base index) os in
-//          begin
-//            match body with
-//              | (fields, tables, condition, []) ->
-//                  (fields, (table, x)::tables, condition, os)
-//              | _ -> assert false
-//          end
-//    | If (c, body, Concat []) ->
-//      (* Turn conditionals into where clauses. We might want to do
-//         this earlier on.  *)
-//      let c = base index c in
-//      let (fields, tables, c', os) = select_clause index unit_query body in
-//      let c = Sql.smart_and c c' in
-//      (fields, tables, c, os)
-//    | Table (_db, table, _keys, (fields, _, _)) ->
-//      (* eta expand tables. We might want to do this earlier on.  *)
-//      (* In fact this should never be necessary as it is impossible
-//         to produce non-eta expanded tables. *)
-//      let var = Sql.fresh_table_var () in
-//      let fields =
-//        List.rev
-//          (StringMap.fold
-//             (fun name _ fields ->
-//               (Sql.Project (var, name), name)::fields)
-//             fields
-//             [])
-//      in
-//        (fields, [(table, var)], Sql.Constant (Constant.Bool true), [])
-//    | Singleton _ when unit_query ->
-//      (* If we're inside an Sql.Empty or a Sql.Length it's safe to ignore
-//         any fields here. *)
-//      (* We currently detect this earlier, so the unit_query stuff here
-//         is redundant. *)
-//      ([], [], Sql.Constant (Constant.Bool true), [])
-//    | Singleton (Record fields) ->
-//      let fields =
-//        List.rev
-//          (StringMap.fold
-//             (fun name v fields ->
-//               (base index v, name)::fields)
-//             fields
-//             [])
-//      in
-//        (fields, [], Sql.Constant (Constant.Bool true), [])
-//    | _ -> assert false
-//and clause : Sql.index -> bool -> Q.t -> Sql.query =
-//  fun index unit_query v -> Sql.Select(select_clause index unit_query v)
-//and base : Sql.index -> Q.t -> Sql.base = fun index ->
-//  let open Q in
-//  function
-//    | If (c, t, e) ->
-//      Sql.Case (base index c, base index t, base index e)
-//    | Apply (Primitive "tilde", [s; r]) ->
-//      begin
-//        match likeify r with
-//          | Some r ->
-//            Sql.Apply ("LIKE", [base index s; Sql.Constant (Constant.String r)])
-//          | None ->
-//            let r =
-//                  (* HACK:
-//                     this only works if the regexp doesn't include any variables bound by the query
-//                  *)
-//                  Sql.Constant (Constant.String (Regex.string_of_regex (Linksregex.Regex.ofLinks (value_of_expression r))))
-//                in
-//                  Sql.Apply ("RLIKE", [base index s; r])
-//        end
-//    | Apply (Primitive "Empty", [v]) ->
-//        Sql.Empty (unit_query v)
-//    | Apply (Primitive "length", [v]) ->
-//        Sql.Length (unit_query v)
-//    | Apply (Primitive f, vs) ->
-//        Sql.Apply (f, List.map (base index) vs)
-//    | Project (Var (x, _field_types), name) ->
-//        Sql.Project (x, name)
-//    | Constant c -> Sql.Constant c
-//    | Primitive "index" ->
-//        (* This is the only place the index parameter is ever materially used. *)
-//        Sql.RowNumber index
-//    | e ->
-//      Debug.print ("Not a base expression: " ^ Q.show e);
-//      assert false
-
-//and unit_query v =
-//  let prepare_clauses : Q.t -> Q.t list =
-//    function
-//      | Q.Concat vs -> vs
-//      | v -> [v]
-//  in
-//  (* queries passed to Empty and Length
-//     (where we don't care about what data they return)
-//  *)
-//  Sql.UnionAll (List.map (clause [] true) (prepare_clauses v), 0)
-//and sql_of_query v =
-//  clause [] false v
-
 //(* The following code is specific to nested queries *)
 //(* The index parameter is essentially a free variable in the query
 //   that can only be replaced by Sql.RowNumber index.
@@ -950,57 +845,8 @@ open System.Collections.Generic
 //   Then the following nesting-specific code could live somewhere else, such as
 //   evalNestedQuery. *)
 
-//type let_clause = Var.var * Q.t * Var.var * Q.t
-//type let_query = let_clause list
 
 
-//let gens_index (gs : (Var.var * Q.t) list)   =
-//  let all_fields t =
-//    let field_types = Q.table_field_types t in
-//    labels_of_field_types field_types
-//  in
-// (* Use keys if available *)
-//  let key_fields t =
-//    match t with
-//      (_, _, (ks::_), _) -> StringSet.from_list ks
-//    |    _ -> all_fields t
-//  in
-//  let table_index get_fields (x, source) =
-//    let t = match source with Q.Table t -> t | _ -> assert false in
-//    let labels = get_fields t in
-//      List.rev
-//        (StringSet.fold
-//           (fun name ps -> (x, name) :: ps)
-//           labels
-//           [])
-//  in
-//  let get_fields = if Settings.get use_keys_in_shredding
-//                   then key_fields
-//                   else all_fields
-//  in concat_map (table_index get_fields) gs
-
-//let outer_index gs_out = gens_index gs_out
-//let inner_index z gs_in =
-//  (* it's just a dynamic index! *)
-//  (z, "2") :: gens_index gs_in
-
-//let extract_gens =
-//  function
-//    | Q.For (_, gs, _, _) -> gs
-//    | _ -> assert false
-
-//let let_clause : let_clause -> Sql.query =
-//  fun (q, outer, z, inner) ->
-//    let gs_out = extract_gens outer in
-//    let gs_in = extract_gens inner in
-//      Sql.With (q,
-//             clause (outer_index gs_out) false outer,
-//             z,
-//             clause (inner_index z gs_in) false inner)
-
-//let sql_of_let_query : let_query -> Sql.query =
-//  fun cs ->
-//    Sql.UnionAll (List.map (let_clause) cs, 0)
 
 //let update : Value.database -> ((Ir.var * string) * Q.t option * Q.t) -> string =
 //  fun db ((_, table), where, body) ->
