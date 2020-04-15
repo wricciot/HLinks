@@ -17,10 +17,14 @@ module SqlGenerator
     type index = (Var.var * string) list
 
     type query =
-      | UnionAll  of query list * int
-      | Select    of select_clause
+      | Union     of bool * query list
+      | Select    of bool * select_clause
       | With      of Var.var * query * Var.var * query
-    and select_clause = (base_exp * string) list * (string * Var.var) list * base_exp * base_exp list
+    and select_clause = (base_exp * string) list * (from_clause * Var.var) list * base_exp
+    and from_clause =
+      | FromQuery      of query
+      | FromTable      of string
+      | FromDedupTable of string 
     and base_exp =
       | Case      of base_exp * base_exp * base_exp
       | Constant  of Constant.t
@@ -128,7 +132,13 @@ module SqlGenerator
                 fields 
                 |> mapstrcat "," (fun (b, l) -> Printf.sprintf "(%s) as %s" (sb b) (quote_field l))
       in
-      let string_of_select fields tables condition =
+      let selectstr is_set = 
+          if is_set then "select distinct " else "select " 
+      in
+      let unionstr is_set = 
+          if is_set then " union " else " union all " 
+      in
+      let string_of_select is_set fields tables condition =
         let tables = String.concat "," tables in
         let fields = string_of_fields fields in
         let where =
@@ -136,30 +146,32 @@ module SqlGenerator
             | Constant (Constant.Bool true) -> ""
             | _ ->  " where " + sb condition
         in
-          "select " + fields + " from " + tables + where
+          selectstr is_set + fields + " from " + tables + where
       in
         match q with
-          | UnionAll ([], _) -> "select 42 as \"@unit@\" where false"
-          | UnionAll ([q], _n) -> sq q // ^ order_by_clause n
-          | UnionAll (qs, _n) ->
-            mapstrcat " union all " (fun q -> "(" + sq q + ")") qs // ^ order_by_clause n
-          | Select (fields, [], Constant (Constant.Bool true), _os) ->
+          // is_set is only meaningful for proper Unions of two or more clauses
+          | Union (_is_set, []) -> 
+                "select 42 as \"@unit@\" where false"
+          | Union (_is_set, [q]) -> sq q // ^ order_by_clause n
+          | Union (is_set, qs) ->
+                mapstrcat (unionstr is_set) (fun q -> "(" + sq q + ")") qs // ^ order_by_clause n
+          | Select (is_set, (fields, [], Constant (Constant.Bool true))) ->
               let fields = string_of_fields fields in
-                "select " + fields
-          | Select (fields, [], condition, _os) ->
+                selectstr is_set + fields
+          | Select (is_set, (fields, [], condition)) ->
               let fields = string_of_fields fields in
-                "select * from (select " + fields + ") as " + fresh_dummy_var () + " where " + sb condition
-          | Select (fields, tables, condition, _os) ->
+                selectstr is_set + "* from (select " + fields + ") as " + fresh_dummy_var () + " where " + sb condition
+          | Select (is_set, (fields, tables, condition)) ->
               (* using quote_field assumes tables contains table names (not nested queries) *)
               let tables = List.map (fun (t, x) -> quote_field t + " as " + (string_of_table_var x)) tables
-              in string_of_select fields tables condition
+              in string_of_select is_set fields tables condition
           | With (_, q, z, q') ->
               match q' with
-              | Select (fields, tables, condition, os) ->
+              | Select (is_set, (fields, tables, condition)) ->
                   (* Inline the query *)
                   let tables = List.map (fun (t, x) -> quote_field t + " as " + (string_of_table_var x)) tables in
                   let q = "(" + sq q + ") as " + string_of_table_var z in
-                  string_of_select fields (q::tables) condition
+                  string_of_select is_set fields (q::tables) condition
               | _ -> failwith "string_of_query"
 
     and string_of_base one_table b =
@@ -208,104 +220,45 @@ module SqlGenerator
       in
         string_of_query_base false q + range
 
-    let rec select_clause : bool -> Q.t -> select_clause =
-      fun unit_query v ->
-      (*  Debug.print ("select_clause: "^string_of_t v); *)
-      match v with
-        | Q.Concat _ -> failwith "select_clause"
-        | Q.For ([], body) ->
-            select_clause unit_query body
-        | Q.For ((x, Q.Table (table, _ft))::gs, body) ->
-            let body = select_clause unit_query (Q.For (gs, body)) in
-            begin
-                match body with
-                  | (fields, tables, condition, []) ->
-                      (fields, (table, x)::tables, condition, [])
-                  | _ -> failwith "select_clause"
-            end
-        | Q.If (c, body, Q.Concat []) ->
-              (* Turn conditionals into where clauses. We might want to do
-                 this earlier on.  *)
-              let c = base_exp c in
-              let (fields, tables, c', os) = select_clause unit_query body in
-              let c = smart_and c c' in
-              (fields, tables, c, os)
-        | Q.Table (table, field_types) ->
-              (* eta expand tables. We might want to do this earlier on.  *)
-              (* In fact this should never be necessary as it is impossible
-                 to produce non-eta expanded tables. *)
-              let var = fresh_table_var () in
-              let fields =
-                List.rev
-                  (Map.fold
-                     (fun fields name _ ->
-                       (Project (var, name), name)::fields)
-                     [] 
-                     field_types)
-              in
-              (fields, [(table, var)], Constant (Constant.Bool true), [])
-        | Q.Singleton _ when unit_query ->
-          (* If we're inside an Sql.Empty or a Sql.Length it's safe to ignore
-             any fields here. *)
-          (* We currently detect this earlier, so the unit_query stuff here
-             is redundant. *)
-          ([], [], Constant (Constant.Bool true), [])
-        | Q.Singleton (Q.Record field_types) ->
-          let fields =
-            List.rev
-              (Map.fold
-                 (fun fields name v ->
-                   (base_exp v, name)::fields)
-                 []
-                 field_types)
-          in
-            (fields, [], Constant (Constant.Bool true), [])
-        | _ -> failwith "select_clause"
-    and clause : bool -> Q.t -> query =
-      fun unit_query v -> Select(select_clause unit_query v)
-    and base_exp : Q.t -> base_exp =
-      function
-        | Q.If (c, t, e) -> Case (base_exp c, base_exp t, base_exp e)
-        // we don't support LIKE in this prototype
-        //| Q.Apply (Primitive "tilde", [s; r]) ->
-        | Q.Apply (Q.Primitive "Empty", [v]) -> Empty (unit_query v)
-        | Q.Apply (Q.Primitive "length", [v]) -> Length (unit_query v)
-        | Q.Apply (Q.Primitive f, vs) -> Apply (f, List.map base_exp vs)
-        | Q.Project (Q.Var (x, _field_types), name) -> Project (x, name)
-        | Q.Constant c -> Constant c
-        // we don't support indices in this prototype
-        //| Primitive "index" ->
-        | e ->
-              Printf.printf "Not a base expression: %s" (Q.string_of_t e)
-              failwith "base_exp"
+    // convert an NRC-style query into an SQL-style query
+    let rec sql_of_query is_set = function
+    | Q.Concat ds -> Union (is_set, List.map (disjunct is_set) ds)
+    | q -> disjunct is_set q
 
-    and unit_query v =
-      let prepare_clauses : Q.t -> Q.t list =
-        function
-          | Q.Concat vs -> vs
-          | v -> [v]
-      in
-      (* queries passed to Empty and Length
-         (where we don't care about what data they return)
-      *)
-      UnionAll (List.map (clause true) (prepare_clauses v), 0)
-    and sql_of_query v =
-      clause false v
+    and disjunct is_set = function
+    | Q.Prom p -> sql_of_query true p
+    | Q.For (gs, j) ->
+        let froms = List.map generator gs in
+        let selects, where = body j in
+        Select (is_set, (selects, froms, where))
+    | _ -> failwith "disjunct"
 
-    type let_clause = Var.var * Q.t * Var.var * Q.t
-    type let_query = let_clause list
+    and generator = function
+    | (v, Q.Prom p) -> (FromQuery (sql_of_query true p), v)
+    | (v, Q.Table (tname, _)) -> (FromTable tname, v)
+    | (v, Q.Dedup (Q.Table (tname, _))) -> (FromDedupTable tname, v)
+    | _ -> failwith "generator"
 
-    let extract_gens =
-      function
-        | Q.For (gs, _) -> gs
-        | _ -> failwith "extract_gens"
+    and body = function
+    | Q.Singleton (Q.Record fields) ->
+        (List.map (fun (f,x) -> (base_exp x, f)) (Map.toList fields), Constant (Constant.Bool true))
+    | Q.If (c, Q.Singleton (Q.Record fields), Q.Concat []) -> 
+        let c' = base_exp c in
+        let t = List.map (fun (f,x) -> (base_exp x, f)) (Map.toList fields) in
+        (t, c')
+    | _ -> failwith "body"
 
-    let let_clause : let_clause -> query =
-      fun (q, outer, z, inner) ->
-        let gs_out = extract_gens outer in
-        let gs_in = extract_gens inner in
-          With (q, clause false outer, z, clause false inner)
-
-    let sql_of_let_query : let_query -> query =
-      fun cs ->
-        UnionAll (List.map (let_clause) cs, 0)
+    and base_exp = function
+    | Q.Project ((Q.Table (n, _) | Q.Var (n,_)), l) -> Project (n,l)
+    | Q.If (c, t, e) -> Case (base_exp c, base_exp t, base_exp e)
+    // we don't support LIKE in this prototype
+    //| Q.Apply (Primitive "tilde", [s; r]) ->
+    | Q.Apply (Q.Primitive "Empty", [v]) -> Empty (sql_of_query false v)
+    | Q.Apply (Q.Primitive "length", [v]) -> Length (sql_of_query false v)
+    | Q.Apply (Q.Primitive f, vs) -> Apply (f, List.map base_exp vs)
+    | Q.Constant c -> Constant c
+    // we don't support indices in this prototype
+    //| Primitive "index" ->
+    | e ->
+          Printf.printf "Not a base expression: %s" (Q.string_of_t e)
+          failwith "base_exp"
