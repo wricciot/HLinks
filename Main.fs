@@ -10,7 +10,7 @@ module Main
 
 open Query
 
-let dummy = Types.unit_type
+let dummy = Types.int_type
 let sItems = [("name",dummy); ("quantity",dummy)] |> Map.ofList 
 let sOrders = [("oid",dummy); ("item",dummy); ("quantity",dummy)] |> Map.ofList
 let tbItems = Table ("Items", sItems)
@@ -40,7 +40,6 @@ let vx = var "x"
 let vy = var "y"
 let vz = var "z"
 
-
 let tbDelat = Table ("TableX", [("fx",dummy)] |> Map.ofList)
 // wraps a query so that it cannot be normalized out
 let blobOf q = For (["x'", tbDelat], Singleton q) |> Dedup |> Prom
@@ -50,14 +49,21 @@ let qDelat =
          ;("x2", Prom (Dedup (For (["z", blobOf (var "x1")], Singleton (var "z")))))],
         blobOf (Apply (Primitive "opaque4", [var "x1"; var "x2"])))
 
-let qDelatNested = 
+let qDelatNested =
+    let pairx3 = flattened_pair (var "z1") (var "z2") in
+    let ftyx3 = field_types_of_record pairx3 in
+    let vx3 = Var ("x3", ftyx3) in
+    let pairx4 = flattened_pair (var "z1") vx3 in
+    let ftyx4 = field_types_of_record pairx4 in
+    let vx4 = Var ("x4", ftyx4) in
+    let vz3 = Var ("z3", ftyx3) in
     For ([("x1", tbDelat) 
          ;("x2", Prom (Dedup (For (["z", blobOf (var "x1")], Singleton (var "z")))))
-         ;("x3", Prom (Dedup (For ([("z1", blobOf (var "x1")); ("z2", blobOf (var "x2"))], Singleton (box_pair (var "z1") (var "z2"))))))
+         ;("x3", Prom (Dedup (For ([("z1", blobOf (var "x1")); ("z2", blobOf (var "x2"))], Singleton (flattened_pair (var "z1") (var "z2"))))))
          ;("x4", Prom (Dedup 
-                (For ([("z1", blobOf (var "x1")); ("z2", blobOf (var "x2")); ("z3", blobOf (var "x3"))], 
-                    Singleton (box_pair (var "z1") (box_pair (var "z2") (var "z3")))))))],
-        blobOf (Apply (Primitive "opaque4", [var "x1"; var "x2"; var "x3"; var "x4"])))
+                (For ([("z1", blobOf (var "x1")); ("z2", blobOf (var "x2")); ("z3", blobOf vx3)], 
+                    Singleton (flattened_pair (var "z1") (flattened_pair (var "z2") vz3))))))],
+        blobOf (Apply (Primitive "opaque4", [var "x1"; var "x2"; vx3; vx4])))
 
 (* for (x <- Table, z <- prom (for y <- dedup Table) when x.a = y.a [(a = x.a)]) [(a = z.a)]
 *)
@@ -81,7 +87,7 @@ let qDelatPromBody =
 
 [<EntryPoint>]
 let main _argv =
-    let thequery = qDelatPromBody in
+    let thequery = qDelatNested in
     printfn "*** printing test query"
     printfn "%s\n" (string_of_t thequery)
     let thequery = Delateralize.delateralize thequery in

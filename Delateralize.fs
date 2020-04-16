@@ -127,7 +127,7 @@ let rec delateralize_step q =
         match findgs [] gs with
         | Some (gsx,x,qx,tyx,y,qy,gsy) ->
             let qf = Q.For (gsy,q) in
-            let tyy = tyx in    // FIXME!!! how can I deduce the type of y?
+            let tyy = Q.field_types_of_query qy in
             Some (prom_delateralize gsx qf x (qx,tyx) y (qy,tyy))
         | None ->
             let ogs = gs >>== (fun (z,qz) -> ds qz >>= fun qz' -> Some (z,qz')) in

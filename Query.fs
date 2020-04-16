@@ -124,6 +124,16 @@ module Query
           | Apply _ | Primitive _ -> Types.unit_type    // HACKHACK
           | e -> failwith ("Can't deduce type for: " + string_of_t e)
 
+  let field_types_of_record q =
+    match type_of_expression q with
+    | Types.RcdTy ftys -> ftys
+    | _ -> failwith "Query.field_types_of_expression"
+
+  let field_types_of_query q =
+    match type_of_expression q with
+    | Types.ListTy (Types.RcdTy ftys) -> ftys
+    | _ -> failwith "Query.field_types_of_expression"
+
   let rec freshen_for_bindings : Map<string,Var.var> -> t -> t = fun env v -> 
     let ffb = freshen_for_bindings env in
       match v with
@@ -165,20 +175,25 @@ module Query
 
   let flatfield f1 f2 = f1 + "@" + f2
 
-  let flattened_pair x y = 
+  let rec flattened_pair x y = 
     match x, y with
-    | Var (nx, ftx), Var (ny, fty) -> 
+    | Var (nx, ftx), _ ->
+        let x' = Record (Map.fold (fun acc f _ -> Map.add f (Project (x,f)) acc) Map.empty ftx)
+        in flattened_pair x' y
+    | _, Var (ny, fty) ->
+        let y' = Record (Map.fold (fun acc f _ -> Map.add f (Project (y,f)) acc) Map.empty fty)
+        in flattened_pair x y'
+    | Record fty1, Record fty2 ->
         let out1 = 
-            Map.fold (fun acc f _ -> Map.add (flatfield "1" f) (Project (x, f)) acc) Map.empty ftx
+            Map.fold (fun acc f v -> Map.add (flatfield "1" f) v acc) Map.empty fty1
         in 
-        let out2 = Map.fold (fun acc f _ -> Map.add (flatfield "2" f) (Project (y,f)) acc) out1 fty
+        let out2 = Map.fold (fun acc f v -> Map.add (flatfield "2" f) v acc) out1 fty2
         in Record out2
-    | _ -> box_pair x y
+    | _ -> failwith "Query.flattened_pair"
 
   let flattened_pair_ft x y = 
     match x, y with
     | Var (nx, ftx), Var (ny, fty) -> 
-        let flatfield f1 f2 = f1 + "@" + f2 in
         let out1 = 
             Map.fold (fun acc f t -> Map.add (flatfield "1" f) t acc) Map.empty ftx
         in 
