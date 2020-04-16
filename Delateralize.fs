@@ -43,26 +43,36 @@ let rec (>>==) (l : 'a list) (f : 'a -> 'a option) : 'a list option =
         | fa, fal -> Some (unopt_default fa a::unopt_default fal al)
 
 // C(q1, x.q2) := for x :- q1, #y :- q2 do {(x,#y)}
+// also returns the fieltypes of the graph
 let graph_query (q1,ty1) x (q2,ty2) =
     let y = Var.fresh_raw_var () in
-    Q.For ([(x, q1); (y, q2)], 
-        Q.Singleton (Q.box_pair (Q.Var (x,ty1)) (Q.Var (y,ty2))))
+    let p = Q.flattened_pair (Q.Var (x,ty1)) (Q.Var (y,ty2)) in
+    let ftys = Q.flattened_pair_ft (Q.Var (x,ty1)) (Q.Var (y,ty2)) in
+    Q.For ([(x, q1); (y, q2)], Q.Singleton p), ftys
 
 // DELATERALIZING REWRITE for iota
 // for gs, y :- I(q3) do q1     -- s.t. x :- q2 in gs
 //  ~> for gs, p :- I(C(Dq2,x.q3)) where x = p.1 do ([y]q1) p.2
 let prom_delateralize gs q1 x (q2,ty2) y (q3,ty3) =
     let p = Var.fresh_raw_var () in
-    // FIXME types of 1 and 2 should be RecordType ty2, RecordType ty3
-    let dummy = Types.unit_type
-    let typ = [("1",dummy);("2",dummy)] |> Map.ofList in
-    let vp = Q.Var (p,typ) in
-    let eq_query a b = Q.Apply (Q.Primitive "==", [a;b]) in
-    Q.For (gs @ [(p, Q.Prom (graph_query (Q.Dedup q2,ty2) x (q3,ty3)))],
-        Q.If (eq_query (Q.Var (x,ty2)) (Q.Project (vp, "1")),
-            Q.Apply (Q.Closure (([y], q1), Map.empty),
-                [Q.Project (vp,"2")]),
-            Q.nil))
+    let graph, ftys = graph_query (Q.Dedup q2,ty2) x (q3,ty3) in
+    let vp = Q.Var (p,ftys) in
+    let vx = Q.Var (x,ty2) in
+    let eq_test a b = Q.Apply (Q.Primitive "==", [a;b]) in
+    let and_query a b = Q.Apply (Q.Primitive "&&", [a;b]) in
+    // eta-expanded vx == p.1, with record flattening
+    let eq_query = 
+        Map.fold 
+            (fun acc f _ ->  and_query acc (eq_test (Q.Project (vx, f)) (Q.Project (vp, Q.flatfield "1" f))))
+            (Q.Constant (Constant.Bool true))
+            ty2
+    // eta-expanded p.2, with record flattening
+    let rp = 
+        ty3
+        |> Map.fold (fun acc f _ -> Map.add f (Q.Project (vp, Q.flatfield "2" f)) acc) Map.empty
+        |> Q.Record
+    Q.For (gs @ [(p, Q.Prom graph)],
+        Q.If (eq_query, Q.Apply (Q.Closure (([y], q1), Map.empty), [rp]), Q.nil))
 
 // Returns (Some ty) if v occurs free with type ty, None otherwise
 let occurs_free (v : Var.var) =

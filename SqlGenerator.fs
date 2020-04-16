@@ -116,7 +116,10 @@ module SqlGenerator
        returned. This allows these operators to take lists that have any
        element type at all. *)
 
-    let quote_field _ = failwith "quote_field"
+    // from the Postgres driver, other DBMS may have it different
+    let quote_field f = 
+        "\"" + Regex.Replace(f, "\"", "\"\"") + "\""
+
     let mapstrcat sep f l = l |> List.map f |> String.concat sep
 
     // convert an NRC-style query into an SQL-style query
@@ -194,7 +197,7 @@ module SqlGenerator
       in
       let string_of_from_clause = function
       | FromTable n -> quote_field n
-      | FromDedupTable n -> "select distinct * from " + quote_field n
+      | FromDedupTable n -> "(select distinct * from " + quote_field n + ")"
       | FromQuery q -> "(" + sq q + ")"
       in
         match q with

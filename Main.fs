@@ -87,4 +87,11 @@ let main _argv =
     let thequery = Delateralize.delateralize thequery in
     printfn "*** printing delateralized test query"
     printfn "%s\n" (string_of_t thequery)
+    let thequery = 
+        thequery
+        |> SqlGenerator.sql_of_query false
+        |> SqlGenerator.string_of_query
+    in
+    printfn "*** printing SQL test query"
+    printfn "%s" thequery
     0 // return an integer exit code

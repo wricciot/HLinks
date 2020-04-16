@@ -163,6 +163,28 @@ module Query
     |> Map.ofList
     |> Record
 
+  let flatfield f1 f2 = f1 + "@" + f2
+
+  let flattened_pair x y = 
+    match x, y with
+    | Var (nx, ftx), Var (ny, fty) -> 
+        let out1 = 
+            Map.fold (fun acc f _ -> Map.add (flatfield "1" f) (Project (x, f)) acc) Map.empty ftx
+        in 
+        let out2 = Map.fold (fun acc f _ -> Map.add (flatfield "2" f) (Project (y,f)) acc) out1 fty
+        in Record out2
+    | _ -> box_pair x y
+
+  let flattened_pair_ft x y = 
+    match x, y with
+    | Var (nx, ftx), Var (ny, fty) -> 
+        let flatfield f1 f2 = f1 + "@" + f2 in
+        let out1 = 
+            Map.fold (fun acc f t -> Map.add (flatfield "1" f) t acc) Map.empty ftx
+        in 
+        Map.fold (fun acc f t -> Map.add (flatfield "2" f) t acc) out1 fty
+    | _ -> failwith "Query.flattened_pair_ft"
+
   let unbox_pair =
     function
       | Record fields ->
