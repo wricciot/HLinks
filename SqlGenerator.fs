@@ -119,107 +119,6 @@ module SqlGenerator
     let quote_field _ = failwith "quote_field"
     let mapstrcat sep f l = l |> List.map f |> String.concat sep
 
-    let rec string_of_query_base ignore_fields q =
-      let sq = string_of_query_base ignore_fields in
-      let sb = string_of_base false in
-      let string_of_fields fields =
-        if ignore_fields then
-          "0 as \"@unit@\"" (* SQL doesn't support empty records! *)
-        else
-          match fields with
-            | [] -> "0 as \"@unit@\"" (* SQL doesn't support empty records! *)
-            | fields -> 
-                fields 
-                |> mapstrcat "," (fun (b, l) -> Printf.sprintf "(%s) as %s" (sb b) (quote_field l))
-      in
-      let selectstr is_set = 
-          if is_set then "select distinct " else "select " 
-      in
-      let unionstr is_set = 
-          if is_set then " union " else " union all " 
-      in
-      let string_of_select is_set fields tables condition =
-        let tables = String.concat "," tables in
-        let fields = string_of_fields fields in
-        let where =
-          match condition with
-            | Constant (Constant.Bool true) -> ""
-            | _ ->  " where " + sb condition
-        in
-          selectstr is_set + fields + " from " + tables + where
-      in
-        match q with
-          // is_set is only meaningful for proper Unions of two or more clauses
-          | Union (_is_set, []) -> 
-                "select 42 as \"@unit@\" where false"
-          | Union (_is_set, [q]) -> sq q // ^ order_by_clause n
-          | Union (is_set, qs) ->
-                mapstrcat (unionstr is_set) (fun q -> "(" + sq q + ")") qs // ^ order_by_clause n
-          | Select (is_set, (fields, [], Constant (Constant.Bool true))) ->
-              let fields = string_of_fields fields in
-                selectstr is_set + fields
-          | Select (is_set, (fields, [], condition)) ->
-              let fields = string_of_fields fields in
-                selectstr is_set + "* from (select " + fields + ") as " + fresh_dummy_var () + " where " + sb condition
-          | Select (is_set, (fields, tables, condition)) ->
-              (* using quote_field assumes tables contains table names (not nested queries) *)
-              let tables = List.map (fun (t, x) -> quote_field t + " as " + (string_of_table_var x)) tables
-              in string_of_select is_set fields tables condition
-          | With (_, q, z, q') ->
-              match q' with
-              | Select (is_set, (fields, tables, condition)) ->
-                  (* Inline the query *)
-                  let tables = List.map (fun (t, x) -> quote_field t + " as " + (string_of_table_var x)) tables in
-                  let q = "(" + sq q + ") as " + string_of_table_var z in
-                  string_of_select is_set fields (q::tables) condition
-              | _ -> failwith "string_of_query"
-
-    and string_of_base one_table b =
-      let sb = string_of_base one_table in
-        match b with
-          | Case (c, t, e) ->
-              "case when " + sb c + " then " + sb t + " else " + sb e + " end"
-          | Constant c -> Constant.string_of_t c
-          | Project (var, label) -> string_of_projection one_table (var, label)
-          | Apply (op, [l; r]) when Arithmetic.is op ->
-                Arithmetic.gen (sb l, op, sb r)
-          | Apply (("intToString" | "stringToInt" | "intToFloat" | "floatToString" | "stringToFloat"), [v]) -> sb v
-          | Apply ("floatToInt", [v]) -> "floor("+sb v+")"
-
-          (* optimisation *)
-          | Apply ("not", [Empty q]) -> "exists (" + string_of_query_base true q + ")"
-
-          | Apply ("not", [v]) -> "not (" + sb v + ")"
-          | Apply (("negate" | "negatef"), [v]) -> "-(" + sb v + ")"
-          | Apply ("&&", [v; w]) -> "(" + sb v + ")" + " and " + "(" + sb w + ")"
-          | Apply ("||", [v; w]) -> "(" + sb v + ")" + " or " + "(" + sb w + ")"
-          | Apply ("==", [v; w]) -> "(" + sb v + ")" + " = " + "(" + sb w + ")"
-          | Apply ("<>", [v; w]) -> "(" + sb v + ")" + " <> " + "(" + sb w + ")"
-          | Apply ("<", [v; w]) -> "(" + sb v + ")" + " < " + "(" + sb w + ")"
-          | Apply (">", [v; w]) -> "(" + sb v + ")" + " > " + "(" + sb w + ")"
-          | Apply ("<=", [v; w]) -> "(" + sb v + ")" + " <= " + "(" + sb w + ")"
-          | Apply (">=", [v; w]) -> "(" + sb v + ")" + " >= " + "(" + sb w + ")"
-          | Apply ("RLIKE", [v; w]) -> "(" + sb v + ")" + " RLIKE " + "(" + sb w + ")"
-          | Apply ("LIKE", [v; w]) -> "(" + sb v + ")" + " LIKE " + "(" + sb w + ")"
-          | Apply (f, args) when SqlFuns.is f -> SqlFuns.name f + "(" + String.concat "," (List.map sb args) + ")"
-          | Apply (f, args) -> f + "(" + String.concat "," (List.map sb args) + ")"
-          | Empty q -> "not exists (" + string_of_query_base true q + ")"
-          | Length q -> "select count(*) from (" + string_of_query_base true q + ") as " + fresh_dummy_var ()
-
-    and string_of_projection one_table (var, label) =
-      if one_table then
-        quote_field label
-      else
-        string_of_table_var var + "." + (quote_field label)
-
-    let string_of_query range q =
-      let range =
-        match range with
-          | None -> ""
-          | Some (limit, offset) -> " limit " + string limit + " offset " + string offset
-      in
-        string_of_query_base false q + range
-
     // convert an NRC-style query into an SQL-style query
     let rec sql_of_query is_set = function
     | Q.Concat ds -> Union (is_set, List.map (disjunct is_set) ds)
@@ -262,3 +161,103 @@ module SqlGenerator
     | e ->
           Printf.printf "Not a base expression: %s" (Q.string_of_t e)
           failwith "base_exp"
+
+    // Raw SQL string generation
+    let rec string_of_query_base ignore_fields q =
+      let sq = string_of_query_base ignore_fields in
+      let sb = string_of_base false in
+      let string_of_fields fields =
+        if ignore_fields then
+          "0 as \"@unit@\"" (* SQL doesn't support empty records! *)
+        else
+          match fields with
+            | [] -> "0 as \"@unit@\"" (* SQL doesn't support empty records! *)
+            | fields -> 
+                fields 
+                |> mapstrcat "," (fun (b, l) -> Printf.sprintf "(%s) as %s" (sb b) (quote_field l))
+      in
+      let selectstr is_set = 
+          if is_set then "select distinct " else "select " 
+      in
+      let unionstr is_set = 
+          if is_set then " union " else " union all " 
+      in
+      let string_of_select is_set fields tables condition =
+        let tables = String.concat "," tables in
+        let fields = string_of_fields fields in
+        let where =
+          match condition with
+            | Constant (Constant.Bool true) -> ""
+            | _ ->  " where " + sb condition
+        in
+          selectstr is_set + fields + " from " + tables + where
+      in
+      let string_of_from_clause = function
+      | FromTable n -> quote_field n
+      | FromDedupTable n -> "select distinct * from " + quote_field n
+      | FromQuery q -> "(" + sq q + ")"
+      in
+        match q with
+          // is_set is only meaningful for proper Unions of two or more clauses
+          | Union (_is_set, []) -> 
+                "select 42 as \"@unit@\" where false"
+          | Union (_is_set, [q]) -> sq q // ^ order_by_clause n
+          | Union (is_set, qs) ->
+                mapstrcat (unionstr is_set) (fun q -> "(" + sq q + ")") qs // ^ order_by_clause n
+          | Select (is_set, (fields, [], Constant (Constant.Bool true))) ->
+              let fields = string_of_fields fields in
+                selectstr is_set + fields
+          | Select (is_set, (fields, [], condition)) ->
+              let fields = string_of_fields fields in
+                selectstr is_set + "* from (select " + fields + ") as " + fresh_dummy_var () + " where " + sb condition
+          | Select (is_set, (fields, tables, condition)) ->
+              let tables = List.map (fun (t, x) -> string_of_from_clause t + " as " + (string_of_table_var x)) tables
+              in string_of_select is_set fields tables condition
+          | With (_, q, z, q') ->
+              match q' with
+              | Select (is_set, (fields, tables, condition)) ->
+                  (* Inline the query *)
+                  let tables = List.map (fun (t, x) -> string_of_from_clause t + " as " + (string_of_table_var x)) tables in
+                  let q = "(" + sq q + ") as " + string_of_table_var z in
+                  string_of_select is_set fields (q::tables) condition
+              | _ -> failwith "string_of_query"
+
+    and string_of_base one_table b =
+      let sb = string_of_base one_table in
+        match b with
+          | Case (c, t, e) ->
+              "case when " + sb c + " then " + sb t + " else " + sb e + " end"
+          | Constant c -> Constant.string_of_t c
+          | Project (var, label) -> string_of_projection one_table (var, label)
+          | Apply (op, [l; r]) when Arithmetic.is op ->
+                Arithmetic.gen (sb l, op, sb r)
+          | Apply (("intToString" | "stringToInt" | "intToFloat" | "floatToString" | "stringToFloat"), [v]) -> sb v
+          | Apply ("floatToInt", [v]) -> "floor("+sb v+")"
+
+          (* optimisation *)
+          | Apply ("not", [Empty q]) -> "exists (" + string_of_query_base true q + ")"
+
+          | Apply ("not", [v]) -> "not (" + sb v + ")"
+          | Apply (("negate" | "negatef"), [v]) -> "-(" + sb v + ")"
+          | Apply ("&&", [v; w]) -> "(" + sb v + ")" + " and " + "(" + sb w + ")"
+          | Apply ("||", [v; w]) -> "(" + sb v + ")" + " or " + "(" + sb w + ")"
+          | Apply ("==", [v; w]) -> "(" + sb v + ")" + " = " + "(" + sb w + ")"
+          | Apply ("<>", [v; w]) -> "(" + sb v + ")" + " <> " + "(" + sb w + ")"
+          | Apply ("<", [v; w]) -> "(" + sb v + ")" + " < " + "(" + sb w + ")"
+          | Apply (">", [v; w]) -> "(" + sb v + ")" + " > " + "(" + sb w + ")"
+          | Apply ("<=", [v; w]) -> "(" + sb v + ")" + " <= " + "(" + sb w + ")"
+          | Apply (">=", [v; w]) -> "(" + sb v + ")" + " >= " + "(" + sb w + ")"
+          | Apply ("RLIKE", [v; w]) -> "(" + sb v + ")" + " RLIKE " + "(" + sb w + ")"
+          | Apply ("LIKE", [v; w]) -> "(" + sb v + ")" + " LIKE " + "(" + sb w + ")"
+          | Apply (f, args) when SqlFuns.is f -> SqlFuns.name f + "(" + String.concat "," (List.map sb args) + ")"
+          | Apply (f, args) -> f + "(" + String.concat "," (List.map sb args) + ")"
+          | Empty q -> "not exists (" + string_of_query_base true q + ")"
+          | Length q -> "select count(*) from (" + string_of_query_base true q + ") as " + fresh_dummy_var ()
+
+    and string_of_projection one_table (var, label) =
+      if one_table then
+        quote_field label
+      else
+        string_of_table_var var + "." + (quote_field label)
+
+    let string_of_query q = string_of_query_base false q
