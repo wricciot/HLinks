@@ -17,12 +17,12 @@ module SqlGenerator
     type index = (Var.var * string) list
 
     type query =
-      | Union     of bool * query list
-      | Select    of bool * select_clause
+      | Union     of bool * query list      (* is_set? *)
+      | Select    of bool * select_clause   (* is_set? *)
       | With      of Var.var * query * Var.var * query
     and select_clause = (base_exp * string) list * (from_clause * Var.var) list * base_exp
     and from_clause =
-      | FromQuery      of query
+      | FromQuery      of bool * query      (* is_lateral? *)
       | FromTable      of string
       | FromDedupTable of string 
     and base_exp =
@@ -130,13 +130,15 @@ module SqlGenerator
     and disjunct is_set = function
     | Q.Prom p -> sql_of_query true p
     | Q.For (gs, j) ->
-        let froms = List.map generator gs in
+        let _, froms =
+            List.fold (fun (locvars,acc) (v,_q as g) -> (v::locvars, generator locvars g::acc)) ([],[]) gs
+        in
         let selects, where = body j in
-        Select (is_set, (selects, froms, where))
+        Select (is_set, (selects, List.rev froms, where))
     | _ -> failwith "disjunct"
 
-    and generator = function
-    | (v, Q.Prom p) -> (FromQuery (sql_of_query true p), v)
+    and generator locvars = function
+    | (v, Q.Prom p) -> (FromQuery (Q.contains_free locvars p, sql_of_query true p), v)
     | (v, Q.Table (tname, _)) -> (FromTable tname, v)
     | (v, Q.Dedup (Q.Table (tname, _))) -> (FromDedupTable tname, v)
     | _ -> failwith "generator"
@@ -185,6 +187,9 @@ module SqlGenerator
       let unionstr is_set = 
           if is_set then " union " else " union all " 
       in
+      let lateralstr is_lat =
+        if is_lat then "lateral " else ""
+      in
       let string_of_select is_set fields tables condition =
         let tables = String.concat "," tables in
         let fields = string_of_fields fields in
@@ -198,7 +203,7 @@ module SqlGenerator
       let string_of_from_clause = function
       | FromTable n -> quote_field n
       | FromDedupTable n -> "(select distinct * from " + quote_field n + ")"
-      | FromQuery q -> "(" + sq q + ")"
+      | FromQuery (is_lat, q) -> lateralstr is_lat + "(" + sq q + ")"
       in
         match q with
           // is_set is only meaningful for proper Unions of two or more clauses

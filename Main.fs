@@ -63,7 +63,7 @@ let qDelatNested =
          ;("x4", Prom (Dedup 
                 (For ([("z1", blobOf (var "x1")); ("z2", blobOf (var "x2")); ("z3", blobOf vx3)], 
                     Singleton (flattened_pair (var "z1") (flattened_pair (var "z2") vz3))))))],
-        blobOf (Apply (Primitive "opaque4", [var "x1"; var "x2"; vx3; vx4])))
+        blobOf vx4)
 
 (* for (x <- Table, z <- prom (for y <- dedup Table) when x.a = y.a [(a = x.a)]) [(a = z.a)]
 *)
@@ -90,6 +90,14 @@ let main _argv =
     let thequery = qDelatNested in
     printfn "*** printing test query"
     printfn "%s\n" (string_of_t thequery)
+    let sqlquery = 
+        thequery
+        |> norm false Map.empty
+        |> SqlGenerator.sql_of_query false
+        |> SqlGenerator.string_of_query
+    in
+    printfn "*** printing SQL query without delateralization"
+    printfn "%s\n" sqlquery
     let thequery = Delateralize.delateralize thequery in
     printfn "*** printing delateralized test query"
     printfn "%s\n" (string_of_t thequery)
@@ -98,6 +106,6 @@ let main _argv =
         |> SqlGenerator.sql_of_query false
         |> SqlGenerator.string_of_query
     in
-    printfn "*** printing SQL test query"
+    printfn "*** printing SQL test query with delateralization"
     printfn "%s" thequery
     0 // return an integer exit code

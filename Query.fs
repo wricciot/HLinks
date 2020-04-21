@@ -84,6 +84,28 @@ module Query
          |> String.concat ";")
   | Project (t,field) -> Printf.sprintf "%s.%s" (string_of_t t) field
   | Table (t,_) -> Printf.sprintf "&%s" t
+  
+  let rec contains_free fvs =
+      let rec cfree bvs = function
+      | Var (w,tyw) -> List.contains w fvs && not (List.contains w bvs)
+      | If (c,t,e) -> cfree bvs c || cfree bvs t || cfree bvs e
+      | Closure ((wl,b),e) ->
+          // XXX: to be checked
+          let bvs' = bvs @ wl @ List.map (fun (w,_) -> w) (Map.toList e) in
+          cfree bvs' b || Map.exists (fun _ q -> cfree bvs q) e
+      | Apply (t, args) -> cfree bvs t || List.exists (cfree bvs) args
+      | Singleton t
+      | Dedup t
+      | Prom t
+      | Project (t,_) -> cfree bvs t
+      | Concat tl -> List.exists (cfree bvs) tl
+      | For (gs, b) -> 
+          let bvs'', res = List.fold (fun (bvs',acc) (w,q) -> w::bvs', acc || cfree bvs' q) (bvs, false) gs in
+          res || cfree bvs'' b
+      | Record fl -> Map.exists (fun _ t -> cfree bvs t) fl
+      | _ -> false
+      in cfree []
+  
 
   let rec tail_of_t : t -> t = fun v ->
     let tt = tail_of_t in
